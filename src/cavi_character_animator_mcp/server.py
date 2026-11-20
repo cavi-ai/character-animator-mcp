@@ -1,16 +1,20 @@
 """Typed Character Animator MCP with cooperative ownership and native evidence."""
 
+import json
 import threading
 from typing import Annotated, Any, Literal
 
 import anyio.to_thread
 from cavi_mcp_core.contracts import Result, failure
+from cavi_mcp_core.media import png_content
 from cavi_mcp_core.server import DESTRUCTIVE as MUTATE
 from cavi_mcp_core.server import READ_ONLY as READ
 from cavi_mcp_core.server import WRITES as WRITE
 from cavi_mcp_core.server import Server
+from mcp.server.mcpserver import AcceptedElicitation, Context, Elicit, ElicitationResult, Resolve
 from mcp.server.mcpserver.exceptions import ToolError
-from pydantic import Field, StrictBool, StrictInt
+from mcp.types import CallToolResult, TextContent
+from pydantic import BaseModel, Field, StrictBool, StrictInt
 
 from . import media
 from .animator import CharacterAnimator
@@ -172,8 +176,34 @@ class CharacterHandoff(Result):
     launches_applications: Literal[False]
 
 
+# Long side of the image capture returns; a larger window capture is scaled down.
+CAPTURE_EDGE = 1568
+
+
+class ImportCancellation(BaseModel):
+    cancelled: StrictBool = Field(description="True if you cancelled this import in Character Animator.")
+
+
 def client():
     return CharacterAnimator(workspace(), data_dir() / "character-animator")
+
+
+def ask_import_cancellation(action: str, operation_id: str, ctx: Context):
+    """For confirm_cancelled_import on a pending import, ask the user when the client supports forms."""
+    capabilities = ctx.client_capabilities
+    elicitation = capabilities.elicitation if capabilities is not None else None
+    if (action != "confirm_cancelled_import" or elicitation is None
+            or (elicitation.form is None and elicitation.url is not None)):
+        return None
+    try:
+        pending = client().read("operation.json")
+    except (CharacterUnknown, OSError, ValueError):
+        return None
+    if (not isinstance(pending, dict) or pending.get("operation_id") != operation_id
+            or pending.get("operation") != "import" or pending.get("state") != "unknown"):
+        return None
+    return Elicit(f"Did you cancel the Character Animator import for operation {operation_id}? "
+                  "Answer yes only if you closed its Import chooser without importing.", ImportCancellation)
 
 
 async def execute(function):
@@ -211,12 +241,20 @@ async def inspect() -> CharacterInspection:
 
 
 @mcp.tool(annotations=WRITE)
-async def capture(directory: str) -> CharacterCapture:
+async def capture(directory: str) -> Annotated[CallToolResult, CharacterCapture]:
     """Capture only the Character Animator window with bounded OCR into a new workspace directory.
 
+    The PNG also comes back as image content, at most 1568 px on its long side.
     Observed text/geometry are visual evidence, not native scene IDs. Never starts recording.
     """
-    return await execute(lambda cancelled: client().capture(directory, cancelled))
+    def run(cancelled):
+        data = client().capture(directory, cancelled)
+        return data, png_content(data["path"], CAPTURE_EDGE)
+
+    data, image = await execute(run)
+    structured = CharacterCapture.model_validate(data).model_dump(mode="json", by_alias=True)
+    return CallToolResult(content=[TextContent(type="text", text=json.dumps(structured)), image],
+                          structured_content=structured)
 
 
 @mcp.tool(annotations=WRITE)
@@ -320,13 +358,17 @@ async def operation_control(action: Literal["inspect", "verify_copy", "continue_
                                             "confirm_cancelled_import", "cancel_unsubmitted",
                                             "reconcile_unsubmitted_copy", "reconcile_copy_after_exit",
                                             "abandon_after_exit"],
-                            operation_id: str, lease_id: str | None = None,
+                            operation_id: str,
+                            answer: Annotated[ElicitationResult[ImportCancellation],
+                                              Resolve(ask_import_cancellation)],
+                            lease_id: str | None = None,
                             user_confirmed_cancelled: StrictBool = False) -> CharacterOperation:
     """Inspect or continue exact pending copy/import/export operations, verify a copy, or reconcile cancellation.
 
     continue_export resumes only the journaled Export Scene/Go To chooser and output directory.
     continue_import never replays File > Import and requires the existing chooser, except for the single
-    recorded pre-menu focus rejection. confirm_cancelled_import requires explicit user attestation and
+    recorded pre-menu focus rejection. confirm_cancelled_import asks the user when the client supports
+    elicitation; otherwise it requires user_confirmed_cancelled from the user's own report. It also needs
     matching process/root/source evidence; it issues no native command and is not native-verified cancellation.
     cancel_unsubmitted applies only to an observed unsubmitted Save As chooser.
     reconcile_unsubmitted_copy records only a closed, pre-submit initial Save As stage after stable source checks;
@@ -337,8 +379,13 @@ async def operation_control(action: Literal["inspect", "verify_copy", "continue_
     observations confirm the original app process and all Character Animator instances have exited. It
     preserves project files and records the native outcome as unknown.
     """
+    confirmation = "caller_reported"
+    if not isinstance(answer, AcceptedElicitation):
+        user_confirmed_cancelled, confirmation = False, "elicited"
+    elif isinstance(answer.data, ImportCancellation):
+        user_confirmed_cancelled, confirmation = answer.data.cancelled, "elicited"
     return await execute(lambda cancelled: client().operation_control(
-        action, operation_id, lease_id, cancelled, user_confirmed_cancelled))
+        action, operation_id, lease_id, cancelled, user_confirmed_cancelled, confirmation))
 
 
 @mcp.tool(annotations=READ)

@@ -1,8 +1,12 @@
 """Ownership/error/protocol fixtures; these do not establish native CA behavior."""
 
+import asyncio
+import base64
 import copy
 import ctypes
 import errno
+import hashlib
+import io
 import os
 import shutil
 import sys
@@ -14,8 +18,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from cavi_mcp_core.contracts import failure
-from mcp import ClientSession, StdioServerParameters
+from mcp import Client, ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.types import ElicitResult
+from PIL import Image
 
 from cavi_character_animator_mcp.animator import (
     CharacterAnimator,
@@ -272,6 +278,12 @@ class NativeFixture:
                     "state": copy.deepcopy(self.state),
                     "result": {"status": "native_project_item_selected",
                                "selection_evidence": {"ocr_identity": "fixture", "selected": True}}}
+        if operation == "capture":
+            destination = Path(parameters["destination"])
+            Image.new("RGB", (2000, 1000), "white").save(destination, "PNG")
+            return {"version": 1, "ok": True, "operation": operation,
+                    "state": copy.deepcopy(self.state),
+                    "result": {"sha256": hashlib.sha256(destination.read_bytes()).hexdigest()}}
         return {"version": 1, "ok": True, "operation": operation,
                 "state": copy.deepcopy(self.state), "result": {"status": "fixture"}}
 
@@ -1634,6 +1646,60 @@ class CharacterOwnershipTests(unittest.TestCase):
         self.assertEqual(archived["before_native"], packet["before_native"])
         self.assertIn("cancellation_native", archived)
         self.assertEqual(archived["failure"], packet["failure"])
+
+    def confirm_cancelled_import_through_client(self, mode):
+        lease, packet = self.pending_unknown_import()
+        self.native.state["focused_window"] = {"identifier": "main-window", "title": "Character Animator"}
+        self.native.state["windows"] = []
+        answers = [ElicitResult(action="decline"), ElicitResult(action="accept", content={"cancelled": True})]
+        asked = []
+
+        async def answer(_context, params):
+            asked.append(params.message)
+            return answers[len(asked) - 1]
+
+        async def confirm():
+            async with Client(mcp, mode=mode, elicitation_callback=answer) as session:
+                arguments = {"action": "confirm_cancelled_import", "operation_id": packet["operation_id"],
+                             "lease_id": lease["lease_id"]}
+                return await session.call_tool("operation_control", arguments), \
+                    await session.call_tool("operation_control", arguments)
+
+        with patch("cavi_character_animator_mcp.server.client", return_value=self.client):
+            declined, accepted = asyncio.run(confirm())
+
+        self.assertEqual(len(asked), 2)
+        self.assertIn(packet["operation_id"], asked[0])
+        self.assertTrue(declined.is_error)
+        self.assertEqual(declined.structured_content["error"]["outcome"], "rejected")
+        self.assertFalse(accepted.is_error, accepted.content)
+        self.assertEqual(accepted.structured_content["status"], "cancelled_user_reported")
+        self.assertEqual(accepted.structured_content["confirmation"], "elicited")
+        archived = self.client.read("operations/" + packet["operation_id"] + ".json")
+        self.assertEqual(archived["confirmation"], "elicited")
+
+    def test_confirm_cancelled_import_asks_the_user_on_the_current_protocol(self):
+        self.confirm_cancelled_import_through_client("auto")
+
+    def test_confirm_cancelled_import_asks_the_user_on_the_2025_protocol(self):
+        self.confirm_cancelled_import_through_client("legacy")
+
+    def test_capture_returns_the_window_image_beside_its_receipt(self):
+        async def capture():
+            async with Client(mcp) as session:
+                return await session.call_tool("capture", {"directory": "captures/one"})
+
+        with patch("cavi_character_animator_mcp.server.client", return_value=self.client):
+            result = asyncio.run(capture())
+
+        self.assertFalse(result.is_error, result.content)
+        output = self.root / "workspace/captures/one/character.png"
+        self.assertEqual(result.structured_content["sha256"], hashlib.sha256(output.read_bytes()).hexdigest())
+        images = [block for block in result.content if block.type == "image"]
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0].mime_type, "image/png")
+        with Image.open(io.BytesIO(base64.b64decode(images[0].data))) as image:
+            self.assertEqual(image.size, (1568, 784))
 
     def test_confirm_cancelled_import_rejects_missing_attestation_modal_root_or_changed_hash(self):
         lease, packet = self.pending_unknown_import()

@@ -17,7 +17,7 @@ is always `false`: the server never says that repeating a call is harmless.
 |---|---|---|---|---|
 | `character_status` | read-only |  | `available`, `connected`, `native`, `reason`, `launches_application` | Whether the application is installed, running and reachable. A missing application is reported in `reason`, not raised. |
 | `inspect` | read-only |  | `project_id`, `native`, `pending_operation`, `launches_application` | The process, the open project roots, the native controls and prompts, and the unresolved operation journal record or `null`. |
-| `capture` | write | `directory`* | `path`, `sha256`, `native`, `identity`, `launches_application` | Captures only the Character Animator window, with recognized text and geometry, into `directory/character.png`. `directory` must not exist. `identity` is `observed_window_and_ocr`. |
+| `capture` | write | `directory`* | `path`, `sha256`, `native`, `identity`, `launches_application` | Captures only the Character Animator window, with recognized text and geometry, into `directory/character.png`, and returns that PNG as image content, scaled to at most 1568 px on its long side. `directory` must not exist. `identity` is `observed_window_and_ocr`. |
 
 `launches_application` is `false` for these tools. `character_status` has `native` `null` when the helper
 reported a rejection.
@@ -44,7 +44,7 @@ reported a rejection.
 
 | Tool | Access | Parameters | Result | What it does |
 |---|---|---|---|---|
-| `operation_control` | write | `action`*, `operation_id`*, `lease_id`, `user_confirmed_cancelled` | `operation_id`, `status`, `native`, `retry_safe` | `action` is `inspect`, `verify_copy`, `continue_copy`, `continue_import`, `continue_export`, `confirm_cancelled_import`, `cancel_unsubmitted`, `reconcile_unsubmitted_copy`, `reconcile_copy_after_exit` or `abandon_after_exit`. `inspect` returns the journal record as `operation` with `status` set to its state. `user_confirmed_cancelled` is a boolean, default `false`, and `confirm_cancelled_import` needs it `true`. The other results are described in [Recovery and unknown outcomes](../guides/recovery.md). |
+| `operation_control` | write | `action`*, `operation_id`*, `lease_id`, `user_confirmed_cancelled` | `operation_id`, `status`, `native`, `retry_safe` | `action` is `inspect`, `verify_copy`, `continue_copy`, `continue_import`, `continue_export`, `confirm_cancelled_import`, `cancel_unsubmitted`, `reconcile_unsubmitted_copy`, `reconcile_copy_after_exit` or `abandon_after_exit`. `inspect` returns the journal record as `operation` with `status` set to its state. `confirm_cancelled_import` asks the user when the client supports elicitation; otherwise it needs `user_confirmed_cancelled`, a boolean, default `false`, set to `true`. Its result carries `confirmation`: `elicited` or `caller_reported`. The other results are described in [Recovery and unknown outcomes](../guides/recovery.md). |
 
 ## Export files
 

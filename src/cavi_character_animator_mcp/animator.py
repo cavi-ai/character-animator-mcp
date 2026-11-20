@@ -1116,7 +1116,7 @@ class CharacterAnimator:
             raise CharacterUnknown("Capture started; inspect its output directory") from exc
 
     def operation_control(self, action, operation_id, lease_id=None, cancelled=None,
-                          user_confirmed_cancelled=False):
+                          user_confirmed_cancelled=False, confirmation="caller_reported"):
         if action not in ("inspect", "verify_copy", "continue_copy", "continue_import", "continue_export",
                           "confirm_cancelled_import", "cancel_unsubmitted",
                           "reconcile_unsubmitted_copy", "reconcile_copy_after_exit",
@@ -1124,6 +1124,8 @@ class CharacterAnimator:
             raise CharacterRejected("Use a known operation ID and a supported operation control action")
         if action == "confirm_cancelled_import" and type(user_confirmed_cancelled) is not bool:
             raise CharacterRejected("user_confirmed_cancelled must be a strict boolean")
+        if confirmation not in ("elicited", "caller_reported"):
+            raise CharacterRejected("confirmation must be elicited or caller_reported")
         if action == "confirm_cancelled_import" and not user_confirmed_cancelled:
             raise CharacterRejected("Confirm only after the user reports that the import was cancelled")
         with self.locked(cancelled):
@@ -1388,6 +1390,7 @@ class CharacterAnimator:
                         raise CharacterRejected("Pending import files changed before cancellation reconciliation")
                     result = {"status": "cancelled_user_reported",
                               "completion": "user_reported_native_cancellation_unverified",
+                              "confirmation": confirmation,
                               "kind": kind,
                               "source": {"path": str(source), "sha256": intent["source_sha256"],
                                          "bytes": source_before.st_size},
@@ -1395,8 +1398,8 @@ class CharacterAnimator:
                                               "bytes": staged_before.st_size},
                               "native": observed, "source_identity": "hashed_private_import_copy"}
                     packet.update(state="resolved", resolution="user_reported_cancellation",
-                                  user_confirmed_cancelled=True, cancellation_native=observed,
-                                  result=result)
+                                  user_confirmed_cancelled=True, confirmation=confirmation,
+                                  cancellation_native=observed, result=result)
                     receipts = self.directory / "operations"
                     receipts.mkdir(exist_ok=True, mode=0o700)
                     write_json(receipts / (operation_id + ".json"), packet)

@@ -4,6 +4,12 @@ Versions come from git tags; a pull request adds its lines under Unreleased and 
 
 ## Unreleased
 
+### Added
+
+- `capture` returns the window PNG as image content, at most 1568 px on its long side, beside its receipt.
+- `operation_control` `confirm_cancelled_import` asks the user through MCP elicitation when the client supports it;
+  its result and receipt record `confirmation` as `elicited` or `caller_reported`.
+
 ### Changed
 
 - An unknown outcome's `next_action` is `inspect`.
