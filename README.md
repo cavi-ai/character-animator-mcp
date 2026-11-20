@@ -1,14 +1,17 @@
 # Cavi Character Animator MCP
 
-## Work on a copy you own.
+**Turn recorded dialogue into a take you can still edit.**
 
-MCP server for Adobe Character Animator on macOS. It prepares closed project copies, tracks which session owns an
-open project, reads the running application's state, imports puppets and dialogue audio, exports scenes and
-verifies the exported PNG and WAV files.
+![A mouse voice actor performs at a microphone as a crocodile puppet fills the monitor.](assets/character-animator-mcp-hero.png)
 
-The server drives the application you have installed and signed in to, through a native helper. Every dispatched
-command is reported as unverified until the application and the output files show it. Bring your own licensed
-application.
+[![PyPI version](https://img.shields.io/pypi/v/cavi-character-animator-mcp)](https://pypi.org/project/cavi-character-animator-mcp/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+Your agent can prepare a project copy, import a puppet PSD or dialogue WAV, and run Adobe’s
+lip sync on scene audio. Refine the take in Character Animator, then have the agent check the
+exported PNG frames and WAV against your handoff recipe.
+
+[Install](#install) · [Try your first take](#quickstart) · [Read the guides](#documentation)
 
 ## Install
 
@@ -40,26 +43,28 @@ Register the stdio server with your MCP client and set the workspace:
 ```
 
 If your client does not inherit your shell's `PATH`, use the absolute path that
-`command -v cavi-character-animator-mcp` prints. Then try a request like:
+`command -v cavi-character-animator-mcp` prints.
 
-> Check that Character Animator is reachable, prepare a copy of `projects/Hero`, open it and claim it.
+Start with a closed Character Animator project whose scene already contains a puppet and its
+dialogue. Ask your agent for one take you can review.
 
-The [setup guide](docs/character-animator-mcp/source/pages/guides/setup.md) and
-[first result](docs/character-animator-mcp/source/pages/guides/first-result.md) walk through the workflow. Tool
-paths are relative to the workspace.
+> Prepare a copy of `projects/Hero` and open the copy. Select `Scene 1`, run Character
+> Animator’s lip sync from the scene audio, and inspect the result.
+
+The [first result guide](docs/character-animator-mcp/source/pages/guides/first-result.md) walks
+through that take and its export. The [setup guide](docs/character-animator-mcp/source/pages/guides/setup.md)
+covers macOS permissions and workspace paths.
 
 ## What you can do
 
-- Read the application: whether it is running and reachable, its process, project root, native controls and
-  unresolved operation state, and a capture of its window.
-- Copy a closed project into the workspace with its file hashes verified, open the copy and claim it with a lease
-  before any change.
-- Import a puppet PSD or dialogue WAV, select a puppet, audio or scene row by name and run one fixed menu action on
-  the selection.
-- Submit a PNG Sequence and WAV export of the owned scene into a new directory, then validate the exported files
-  against an explicit recipe and write a pinned media receipt with a measured audio descriptor.
-- Inspect, verify, continue or reconcile a recorded native operation, and keep unknown outcomes instead of
-  retrying them.
+- **Keep the original handy.** Prepare a separate, editable copy of a closed project. The server
+  checks the copied files and confirms which project the session owns before editing.
+- **Work with your own puppet and dialogue.** Import a puppet PSD or a dialogue WAV and use
+  Character Animator’s scene and lip-sync actions on the selected items.
+- **Check the handoff.** Request a PNG sequence and WAV. Check frame order, file hashes, and
+  audio timing against an explicit recipe, then save a receipt for the output files.
+- **See where the work landed.** Inspect the open project, capture the app window, and review
+  recorded operations before continuing an interrupted action.
 
 | Tool | Purpose |
 |---|---|
