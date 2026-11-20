@@ -88,7 +88,8 @@ The paths are placeholders; use the names of the files the export wrote.
   image.
 - The duration is the frame count times `denominator` over `numerator` and is at most 300 seconds.
 - `audio` is optional. It names a PCM WAV of at most 64 MiB and at most 300 seconds, mono or stereo, 8 to 192 kHz,
-  integer samples of 1 to 4 bytes, together with `start` (seconds, 0 to 300), `clip_in_samples` and
+  integer samples of 1 to 4 bytes or 32-bit float samples (the PNG Sequence and WAV export writes 32-bit float),
+  together with `start` (seconds, 0 to 300), `clip_in_samples` and
   `duration_samples`. The clip must lie inside the WAV and end no later than the frames do.
 - `source_roles` lists up to 62 files that stay with the export, each with a `role` of `project`, `puppet`,
   `performance`, `export_xml`, `export_receipt`, `artwork` or `dialogue_source`, and distinct paths. The server
@@ -99,7 +100,7 @@ The paths are placeholders; use the names of the files the export wrote.
 
 `export_inspect` returns what it found without writing anything: `status` `inspected`, the frames in the declared
 order with their sizes and hashes, `frame_count`, `duration`, `fps` reduced to lowest terms, the audio with its
-measured `sample_rate`, `channels`, `sample_width` and `samples`, the `source_roles` and every input's hash in
+measured `sample_rate`, `channels`, `sample_width`, `sample_format` (`integer` or `float`) and `samples`, the `source_roles` and every input's hash in
 `inputs`. `frame_order_source` is `explicit_recipe` and `frame_rate_source` is `caller_declared`. `native_export` is
 `not_verified` and `launches_applications` is `false`.
 

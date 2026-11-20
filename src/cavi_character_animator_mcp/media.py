@@ -59,12 +59,15 @@ def _audio(workspace, item, frame_duration):
         with wave.open(io.BytesIO(raw), 'rb') as stream:
             rate, channels, width, samples = (stream.getframerate(), stream.getnchannels(),
                                                stream.getsampwidth(), stream.getnframes())
-            if (stream.getcomptype() != 'NONE' or stream.getformat() == wave.WAVE_FORMAT_IEEE_FLOAT
+            # Character Animator writes 32-bit float WAV exports.
+            sample_format = 'float' if stream.getformat() == wave.WAVE_FORMAT_IEEE_FLOAT else 'integer'
+            if (stream.getcomptype() != 'NONE' or (sample_format == 'float' and width != 4)
                     or not 8000 <= rate <= 192000
                     or channels not in (1, 2) or not 1 <= width <= 4 or samples <= 0
                     or samples / rate > 300
                     or len(stream.readframes(samples)) != samples * channels * width):
-                raise ValueError('Character dialogue requires complete 8..192-kHz mono/stereo integer PCM, at most 300 seconds')
+                raise ValueError('Character dialogue requires complete 8..192-kHz mono/stereo integer or 32-bit float '
+                                 'PCM, at most 300 seconds')
     except (wave.Error, EOFError) as exc:
         raise ValueError('Character dialogue export must be a valid uncompressed PCM WAV') from exc
     if (type(item['start']) not in (int, float) or not math.isfinite(item['start']) or not 0 <= item['start'] <= 300
@@ -73,7 +76,8 @@ def _audio(workspace, item, frame_duration):
             or item['clip_in_samples'] + item['duration_samples'] > samples
             or item['start'] + item['duration_samples'] / rate > frame_duration + 1e-9):
         raise ValueError('Character dialogue sample range must fit the WAV and ordered frame duration')
-    return {**reference, 'sample_rate': rate, 'channels': channels, 'sample_width': width, 'samples': samples,
+    return {**reference, 'sample_rate': rate, 'channels': channels, 'sample_width': width,
+            'sample_format': sample_format, 'samples': samples,
             **{key: item[key] for key in ('start', 'clip_in_samples', 'duration_samples')}}
 
 

@@ -104,6 +104,26 @@ class CharacterMediaTests(unittest.TestCase):
                     media.ingest_export(root, 'export-input.json', 'handoff')
                 self.assertFalse((root / 'handoff').exists())
 
+    def test_accepts_the_32_bit_float_wav_character_animator_exports(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            spec = fixture(root)
+            path = root / spec['audio']['path']
+            # 2400 stereo 32-bit float silent samples, as a format-3 WAV.
+            data = bytes(2400 * 2 * 4)
+            path.write_bytes(b'RIFF' + (36 + len(data)).to_bytes(4, 'little') + b'WAVEfmt '
+                             + (16).to_bytes(4, 'little') + (3).to_bytes(2, 'little') + (2).to_bytes(2, 'little')
+                             + (48000).to_bytes(4, 'little') + (48000 * 8).to_bytes(4, 'little')
+                             + (8).to_bytes(2, 'little') + (32).to_bytes(2, 'little')
+                             + b'data' + len(data).to_bytes(4, 'little') + data)
+            spec['audio'] = {**reference(path), 'start': 0, 'clip_in_samples': 0, 'duration_samples': 2400}
+            write(root / 'export-input.json', spec)
+            result = media.ingest_export(root, 'export-input.json', 'handoff')
+            self.assertEqual((result['cutscene_audio']['sample_width'], result['cutscene_audio']['sample_format'],
+                              result['cutscene_audio']['samples']), (4, 'float', 2400))
+            self.assertEqual(json.loads((root / 'handoff' / 'handoff.json').read_text())['cutscene_audio']
+                             ['sample_format'], 'float')
+
     def test_rejects_invalid_or_truncated_audio_and_bad_sample_offsets(self):
         for mutation in ('truncated', 'float_pcm', 'bad_samples', 'bool_start', 'past_end', 'byte_budget'):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
