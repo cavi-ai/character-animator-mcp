@@ -1,11 +1,10 @@
 # Cavi Character Animator MCP
 
-**Turn recorded dialogue into a take you can still edit.**
+## Turn recorded dialogue into a take you can still edit.
 
-![A mouse voice actor performs at a microphone as a crocodile puppet fills the monitor.](assets/character-animator-mcp-hero.png)
+![A mouse voice actor performs at a microphone as a crocodile puppet fills the monitor.](https://raw.githubusercontent.com/cavi-ai/character-animator-mcp/main/assets/character-animator-mcp-hero.png)
 
-[![PyPI version](https://img.shields.io/pypi/v/cavi-character-animator-mcp)](https://pypi.org/project/cavi-character-animator-mcp/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![PyPI weekly downloads](https://img.shields.io/pypi/dw/cavi-character-animator-mcp?label=PyPI%20downloads%2Fweek)](https://pypi.org/project/cavi-character-animator-mcp/)
 
 Your agent can prepare a project copy, import a puppet PSD or dialogue WAV, and run Adobe’s
 lip sync on scene audio. Refine the take in Character Animator, then have the agent check the
@@ -70,7 +69,7 @@ covers macOS permissions and workspace paths.
 |---|---|
 | `character_status` | Report whether the application is running and reachable. |
 | `inspect` | Read the process, project root, native controls and unresolved operation state. |
-| `capture` | Capture the Character Animator window with text recognition into a new workspace directory. |
+| `capture` | Capture the Character Animator window with text recognition into a new workspace directory and return it as an image. |
 | `session_control` | Inspect, claim, renew, release or resume ownership of an open project. |
 | `project_prepare_copy` | Copy a closed `.chproj` tree into the workspace and verify its file hashes. |
 | `project_open_prepared_copy` | Open a prepared copy in the application. |
@@ -91,7 +90,7 @@ For a closed Character Animator project, prepare a copy with `project_prepare_co
 its project root and claim it with `session_control` before editing. A WAV handoff receipt does not confirm import:
 check that the audio appears in the project's Audio rows. After a process exits, the operation control and session
 control tools provide explicit reconciliation and lease release actions; they preserve unknown outcomes and project
-files.
+files. To record a cancelled import, the server asks you directly when your MCP client supports elicitation.
 
 Keep workspace ownership records private. Each native operation is recorded before it runs. If an operation reports
 an unknown outcome, inspect the application and outputs or reconcile the recorded operation before trying again. See
