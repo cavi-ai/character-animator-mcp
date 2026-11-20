@@ -54,15 +54,6 @@ The [first result guide](docs/character-animator-mcp/source/pages/guides/first-r
 through that take and its export. The [setup guide](docs/character-animator-mcp/source/pages/guides/setup.md)
 covers macOS permissions and workspace paths.
 
-## Try one take
-
-This example imports a puppet PSD and a spoken line into a new project, records a lip-sync take from the
-scene audio, and checks the exported PNG frames and WAV into a pinned handoff.
-
-![Four exported frames of the example puppet, Pip, on different mouth shapes](https://raw.githubusercontent.com/cavi-ai/character-animator-mcp/main/examples/first-take/take-frames.png)
-
-[Explore the example and source media](examples/first-take/README.md).
-
 ## What you can do
 
 - **Keep the original handy.** Prepare a separate, editable copy of a closed project. The server
