@@ -23,6 +23,7 @@ from cavi_character_animator_mcp.animator import (
     write_json,
 )
 from cavi_character_animator_mcp.bridge import CharacterRejected, CharacterUnknown
+from cavi_character_animator_mcp.server import mcp
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -520,6 +521,24 @@ class CharacterOwnershipTests(unittest.TestCase):
         observed = self.client.inspect()
         with self.assertRaisesRegex(CharacterRejected, "no verified private copy receipt"):
             self.client.session("claim", "fixture", observed["project_id"], prepared_copy_id=fixed_id)
+
+    @MACOS_ONLY
+    def test_rejected_copy_removes_its_stage_when_the_source_has_read_only_folders(self):
+        source = self.closed_character_project()
+        locked = source / "Ch Data/repo.noindex"
+        locked.chmod(0o555)
+        self.addCleanup(locked.chmod, 0o755)
+        original_copytree = shutil.copytree
+
+        def mutate_source(src, dst, *args, **kwargs):
+            result = original_copytree(src, dst, *args, **kwargs)
+            (source / "Ch Data/projectdata.rope").write_bytes(b"changed during copy")
+            return result
+
+        with (patch("cavi_character_animator_mcp.animator.shutil.copytree", mutate_source),
+              self.assertRaisesRegex(CharacterRejected, "Source changed while preparing")):
+            self.client.prepare_copy("ClosedProject", "copies/LockedSource")
+        self.assertEqual(list((self.root / "workspace/copies").iterdir()), [])
 
     @MACOS_ONLY
     def test_prepare_copy_preserves_destination_created_at_exclusive_publish(self):
@@ -2038,6 +2057,13 @@ class CharacterOwnershipTests(unittest.TestCase):
             unknown = failure("project_save_copy", exc)
         self.assertEqual(unknown.structured_content["error"]["outcome"], "unknown")
         self.assertFalse(unknown.structured_content["error"]["retry_safe"])
+
+    def test_unknown_outcome_points_at_the_inspect_tool(self):
+        unknown = mcp.failure("scene_export", CharacterUnknown("chooser did not settle"))
+        self.assertEqual(unknown.structured_content["error"]["outcome"], "unknown")
+        self.assertEqual(unknown.structured_content["error"]["next_action"], "inspect")
+        rejected = mcp.failure("scene_export", CharacterRejected("stale", "STALE_STATE"))
+        self.assertEqual(rejected.structured_content["error"]["next_action"], "inspect_inputs")
 
 
 class CharacterProtocolTests(unittest.IsolatedAsyncioTestCase):
