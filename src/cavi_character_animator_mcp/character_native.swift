@@ -299,6 +299,11 @@ final class Observation {
                     parent = axElement(attribute(candidate, "AXParent"))
                 }
             }
+            // The focused window is walked first so a long chooser file list cannot spend the node budget before it.
+            if let focused = observation.focusedWindow,
+               let index = windows.firstIndex(where: { CFEqual($0, focused) }), index > 0 {
+                windows.insert(windows.remove(at: index), at: 0)
+            }
             var budget = 512, truncated = false
             progress("observe_tree_started", details: ["windows": windows.count])
             func supportedAttributes(_ element: AXUIElement) -> [String] {
@@ -347,7 +352,8 @@ final class Observation {
                 return result
             }
             func walk(_ element: AXUIElement, depth: Int, path: String,
-                      inExportScenePanel: Bool = false) -> [String: Any] {
+                      inExportScenePanel: Bool = false, inOpenPanel: Bool = false,
+                      columnStrip: Bool = false) -> [String: Any] {
                 var node = scalarNode(element, path: path)
                 observation.nodes.append((element, node)); budget -= 1
                 if observation.nodes.count % 64 == 0 {
@@ -359,6 +365,8 @@ final class Observation {
                     || (node["role"] as? String == "AXWindow"
                         && node["identifier"] as? String == "save-panel"
                         && node["title"] as? String == "Export Scene")
+                let openPanel = inOpenPanel
+                    || (node["role"] as? String == "AXWindow" && node["identifier"] as? String == "open-panel")
                 let exportFileList = exportScenePanel && node["role"] as? String == "AXBrowser"
                 if exportFileList {
                     node["children_omitted"] = "export_scene_file_list"
@@ -366,10 +374,19 @@ final class Observation {
                     observation.nodes[observation.nodes.count - 1].1 = node
                 } else if depth < 12 && budget > 0 && !sidebar {
                     var descendants: [[String: Any]] = []
-                    for (index, child) in children(element).prefix(128).enumerated() {
+                    let all = children(element)
+                    // The Import chooser's selected file and preview are in its last columns; the parent folder
+                    // columns before them can spend the whole node budget.
+                    let first = columnStrip && all.count > 3 ? all.count - 3 : 0
+                    if first > 0 {
+                        node["children_scope"] = "last_three_columns"
+                        observation.nodes[observation.nodes.count - 1].1 = node
+                    }
+                    for (index, child) in all.enumerated().dropFirst(first).prefix(128) {
                         if budget <= 0 { truncated = true; break }
                         descendants.append(walk(child, depth: depth + 1, path: path + "/" + String(index),
-                                                inExportScenePanel: exportScenePanel))
+                                                inExportScenePanel: exportScenePanel, inOpenPanel: openPanel,
+                                                columnStrip: openPanel && node["role"] as? String == "AXBrowser"))
                     }
                     if !descendants.isEmpty { node["children"] = descendants }
                 } else if !children(element).isEmpty && !sidebar { truncated = true }
@@ -1314,9 +1331,10 @@ final class Observation {
                 guard let parsed = URL(string: whereURL), parsed.standardizedFileURL.path == directory else { return false }
             } else if kind == "export_png_wav" {
                 guard directoryNavigationProved else { return false }
-            } else {
+            } else if kind != "import" {
                 return false
             }
+            // Without a where-popup URL, an import is proved by the selected row's exact file URL below.
             if kind == "export_png_wav" {
                 return true
             }
@@ -1339,7 +1357,9 @@ final class Observation {
             var observations = 0
             var lastReady = false
             var fingerprintStable = false
-            while ProcessInfo.processInfo.systemUptime < deadline {
+            // An observation of a large chooser tree can take seconds; three observations let a state that
+            // became ready after the first one be confirmed stable.
+            while ProcessInfo.processInfo.systemUptime < deadline || observations < 3 {
                 try Task.checkCancellation()
                 let current = try observe()
                 try verify(current)

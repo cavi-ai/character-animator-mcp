@@ -1,0 +1,49 @@
+{
+  "scene_export": {
+    "frames": 720,
+    "frame_names": "Pip.000.png to Pip.719.png",
+    "width": 1702,
+    "height": 988,
+    "wav": {"channels": 2, "sample_rate": 48000, "format": "Float32", "samples": 1440000, "seconds": 30.0},
+    "sidecars": ["Pip/Pip.json", "Pip.xml"]
+  },
+  "recipe": {
+    "frames": ["Pip.000.png", "Pip.005.png", "Pip.010.png", "Pip.015.png", "Pip.020.png", "Pip.025.png",
+               "Pip.030.png", "Pip.035.png", "Pip.040.png", "Pip.045.png", "Pip.050.png", "Pip.055.png",
+               "Pip.060.png", "Pip.065.png", "Pip.070.png", "Pip.075.png"],
+    "frame_rate": {"numerator": 24, "denominator": 5},
+    "audio": {"start": 0, "clip_in_samples": 0, "duration_samples": 160000}
+  },
+  "export_ingest": {
+    "status": "ingested",
+    "frame_count": 16,
+    "fps": {"numerator": 24, "denominator": 5},
+    "duration": 3.3333333333333335,
+    "cutscene_audio": {
+      "path": "first-take/export/Pip/Pip.wav",
+      "sample_rate": 48000,
+      "channels": 2,
+      "sample_width": 4,
+      "sample_format": "float",
+      "samples": 1440000,
+      "start": 0,
+      "clip_in_samples": 0,
+      "duration_samples": 160000
+    },
+    "source_roles": [
+      {"role": "project", "path": "first-take/Pip/Character Animator Project.chproj"},
+      {"role": "puppet", "path": "first-take/media/Pip.psd"},
+      {"role": "dialogue_source", "path": "first-take/media/dialogue.wav"},
+      {"role": "export_xml", "path": "first-take/export/Pip.xml"},
+      {"role": "export_receipt", "path": "first-take/export/Pip/Pip.json"}
+    ],
+    "frame_order_source": "explicit_recipe",
+    "frame_rate_source": "caller_declared",
+    "audio_timing_source": "explicit_samples",
+    "xml_timing": "not_interpreted",
+    "handoff": "first-take/handoff/handoff.json",
+    "media_receipt": "first-take/handoff/media/media.json"
+  },
+  "strip": {"frames": ["Pip.010.png", "Pip.030.png", "Pip.040.png", "Pip.050.png"],
+            "seconds": [0.417, 1.25, 1.667, 2.083]}
+}
