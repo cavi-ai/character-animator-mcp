@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cavi_mcp_core.contracts import UnknownToolError, failure
+from cavi_mcp_core.contracts import UnknownToolError
 
 from cavi_character_animator_mcp import server
 from cavi_character_animator_mcp.bridge import CharacterRejected
@@ -124,7 +124,7 @@ def reported_codes():
     )
     causes = [UnknownToolError("absent"), ValueError("bad"), FileNotFoundError("gone"),
               RuntimeError("busy"), *(CharacterRejected("refused", code) for code in server_codes)]
-    errors = [failure("tool", cause).structured_content["error"] for cause in causes]
+    errors = [server.mcp.failure("tool", cause).structured_content["error"] for cause in causes]
     return {(error["code"], error["outcome"], error["next_action"]) for error in errors}
 
 

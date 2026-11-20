@@ -4,7 +4,7 @@ import threading
 from typing import Annotated, Any, Literal
 
 import anyio.to_thread
-from cavi_mcp_core.contracts import Result
+from cavi_mcp_core.contracts import Result, failure
 from cavi_mcp_core.server import DESTRUCTIVE as MUTATE
 from cavi_mcp_core.server import READ_ONLY as READ
 from cavi_mcp_core.server import WRITES as WRITE
@@ -17,7 +17,15 @@ from .animator import CharacterAnimator
 from .bridge import CharacterRejected, CharacterUnknown, NativeBridge
 from .config import data_dir, workspace
 
-mcp = Server("cavi-character-animator-mcp", package="cavi-character-animator-mcp", anticipated=(), instructions=(
+
+class CharacterAnimatorServer(Server):
+    def failure(self, name, error):
+        """An unknown outcome points at inspect, which reads the app and unresolved operation state."""
+        return failure(name, error, unknown_next_action="inspect")
+
+
+mcp = CharacterAnimatorServer("cavi-character-animator-mcp", package="cavi-character-animator-mcp",
+                              anticipated=(), instructions=(
     "Controls the installed macOS Character Animator through a bounded native adapter. "
     "Start with character_status and inspect. Claim session_control using the observed project_id. "
     "Save a new owned project copy before scene mutations. Native menus, visual observations and "

@@ -1,12 +1,17 @@
 """Native bridge request identity serialization tests."""
 
+import hashlib
 import json
 import os
+import socket
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+from cavi_mcp_core import journal
 
 from cavi_character_animator_mcp.bridge import CharacterUnknown, NativeBridge
 
@@ -179,6 +184,81 @@ class CharacterBridgeRequestTests(unittest.TestCase):
         self.assertEqual(context["phase"], "transport_interrupted")
         self.assertIsNone(context["submission_may_have_started"])
         self.assertEqual(context["progress"], [trace.strip()])
+
+    @unittest.skipUnless(os.name == "posix", "owned execution uses private Unix sockets")
+    def test_helper_launch_registers_with_the_configured_process_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            owner = _Owner(root)
+            self.addCleanup(owner.close)
+            helper = root / "native-helper"
+            helper.write_text("#!/bin/sh\ncat >/dev/null\nprintf '%s' "
+                              "'{\"version\":1,\"operation\":\"status\",\"ok\":true,\"state\":{},\"result\":{}}'\n")
+            helper.chmod(0o755)
+
+            with (patch.dict(os.environ, {"CAVI_MCP_PROCESS_OWNER": str(owner.config)}),
+                  patch("cavi_character_animator_mcp.bridge.application",
+                        return_value=(Path("/Applications/Adobe Character Animator 2026.app"), {})),
+                  patch.object(NativeBridge, "executable", return_value=helper)):
+                result = NativeBridge(root / "runtime").call("status")
+
+        self.assertTrue(result["ok"])
+        self.assertIsNotNone(owner.request, "the helper launched without registering with its owner")
+        self.assertEqual(owner.request["command"], [str(helper)])
+
+
+class _Owner:
+    """A private one-launch process owner speaking the cavi_mcp_core.owned_exec protocol."""
+
+    def __init__(self, root):
+        self.records = root / "records"
+        self.records.mkdir(mode=0o700)
+        self.endpoint = root / "owner.sock"
+        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.socket.bind(str(self.endpoint))
+        self.endpoint.chmod(0o600)
+        self.socket.listen(1)
+        self.socket.settimeout(0.1)
+        self.config = root / "owner.json"
+        journal.write_json(self.config, {"version": 1, "attempt": "unit-attempt",
+                                         "socket": str(self.endpoint), "records": str(self.records),
+                                         "token": "test-capability"})
+        self.request = None
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self.serve)
+        self.thread.start()
+
+    def serve(self):
+        while not self.stop.is_set():
+            try:
+                connection, _ = self.socket.accept()
+                break
+            except TimeoutError:
+                continue
+        else:
+            return
+        with connection, connection.makefile("rb") as stream:
+            frame = json.loads(stream.readline(65537))
+            if frame["token"] != "test-capability":
+                return
+            self.request = frame["request"]
+            record = self.records / "registered.json"
+            journal.write_json(record, {"request": self.request, "birth_identity": "recorded-birth"})
+            connection.sendall(_encoded({
+                "launch_permitted": True,
+                "request_sha256": hashlib.sha256(_encoded(self.request)).hexdigest(),
+                "record": "registered.json",
+                "record_sha256": hashlib.sha256(record.read_bytes()).hexdigest(),
+            }))
+
+    def close(self):
+        self.stop.set()
+        self.socket.close()
+        self.thread.join(timeout=6)
+
+
+def _encoded(value):
+    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
 if __name__ == "__main__":

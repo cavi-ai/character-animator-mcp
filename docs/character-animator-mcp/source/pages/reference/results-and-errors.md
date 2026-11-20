@@ -23,8 +23,8 @@ A failed call is a tool error whose structured content has this shape:
 ```
 
 `rejected` means nothing was dispatched to the application. `unknown` means a native command may or may not have
-happened: the journal record stays, and `next_action` is `inspect_application_and_outputs`. The tools to do that
-with are `inspect`, `operation_control` `inspect` and the output files; see [Recovery and unknown
+happened: the journal record stays, and `next_action` is `inspect`, the tool that reads the application and the
+unresolved operation. Then use `operation_control` `inspect` and the output files; see [Recovery and unknown
 outcomes](../guides/recovery.md).
 
 ### Codes
@@ -34,7 +34,7 @@ outcomes](../guides/recovery.md).
 | `TOOL_NOT_FOUND` | `rejected` | `list_tools` | The tool name is not registered. |
 | `INVALID_ARGUMENT` | `rejected` | `inspect_inputs` | The arguments fail the input schema or name an undeclared argument, or the server refused the request before dispatch: a path outside the workspace, an existing output, a missing or expired lease, a changed `expected_fingerprint`, an unresolved operation. |
 | `INPUT_NOT_FOUND` | `rejected` | `inspect_inputs` | The tool raised `FileNotFoundError`. |
-| `OUTCOME_UNKNOWN` | `unknown` | `inspect_application_and_outputs` | Anything that may have changed the application or the output: an interrupted or malformed native response, an unresolved step, a failed verification, or any other `OSError` or `RuntimeError`. |
+| `OUTCOME_UNKNOWN` | `unknown` | `inspect` | Anything that may have changed the application or the output: an interrupted or malformed native response, an unresolved step, a failed verification, or any other `OSError` or `RuntimeError`. |
 | `PLATFORM_UNSUPPORTED` | `rejected` | `inspect_inputs` | The host is not macOS. |
 | `APP_UNAVAILABLE` | `rejected` | `inspect_inputs` | Character Animator is not installed, or not at the path `CAVI_CHARACTER_ANIMATOR_APP` names. |
 | `APP_IDENTITY_MISMATCH` | `rejected` | `inspect_inputs` | The application at that path is not Character Animator. |

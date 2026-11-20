@@ -16,9 +16,11 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+from cavi_mcp_core.files import digest as sha256
 from cavi_mcp_core.files import inside
 from cavi_mcp_core.journal import fingerprint, write_json
 from cavi_mcp_core.lock import FileLock
+from cavi_mcp_core.workspace import remove_tree
 
 from .bridge import CharacterRejected, CharacterUnknown, NativeBridge
 
@@ -409,15 +411,12 @@ class CharacterAnimator:
                     raise CharacterUnknown(
                         "Project destination was published but verification failed; inspect it"
                     ) from exc
-                if stage.exists() and not stage.is_symlink():
-                    shutil.rmtree(stage)
+                if stage.exists() and not stage.is_symlink() and remove_tree(stage):
+                    raise CharacterUnknown(f"Rejected copy left its temporary stage {stage}; inspect it") from exc
                 raise
             except BaseException as exc:
                 if stage.exists() and not stage.is_symlink():
-                    try:
-                        shutil.rmtree(stage)
-                    except OSError:
-                        pass
+                    remove_tree(stage)
                 if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                     raise
                 if isinstance(exc, CharacterUnknown):
@@ -1108,7 +1107,7 @@ class CharacterAnimator:
         try:
             if output.is_symlink() or output.stat().st_size > 32 * 1024 * 1024:
                 raise CharacterUnknown("Native capture is not a bounded regular artifact")
-            digest = hashlib.sha256(output.read_bytes()).hexdigest()
+            digest = sha256(output, 32 * 1024 * 1024)
             if digest != native["result"].get("sha256"):
                 raise CharacterUnknown("Native capture differs from its receipt")
             return {"path": str(output), "sha256": digest, "native": native,

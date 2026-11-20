@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import signal
@@ -14,7 +13,7 @@ import time
 import uuid
 from pathlib import Path
 
-from cavi_mcp_core import apps
+from cavi_mcp_core import apps, files, owned_exec
 from cavi_mcp_core.contracts import OperationRejected, OperationUnknown
 
 from . import native
@@ -106,7 +105,7 @@ class NativeBridge:
                 os.close(descriptor)
             with log.open("w+b") as output:
                 progress_output = progress_log.open("ab", buffering=0) if progress_log else subprocess.DEVNULL
-                process = subprocess.Popen([str(binary)], stdin=subprocess.PIPE, stdout=output,
+                process = subprocess.Popen(owned_exec.command([binary]), stdin=subprocess.PIPE, stdout=output,
                                            stderr=progress_output, start_new_session=True)
                 try:
                     process.stdin.write(json.dumps(request).encode())
@@ -203,8 +202,11 @@ class NativeBridge:
             raise failure
         if not isinstance(result.get("state"), dict) or not isinstance(result.get("result"), dict):
             raise CharacterUnknown("Native response lacks observed state")
-        result["transport"] = {"source_sha256": binary.parent.name,
-                               "helper_sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}
+        try:
+            helper_sha256 = files.digest(binary)
+        except ValueError as exc:
+            raise CharacterUnknown("Native helper changed during the request") from exc
+        result["transport"] = {"source_sha256": binary.parent.name, "helper_sha256": helper_sha256}
         if progress_log:
             progress_log.unlink(missing_ok=True)
         return result
