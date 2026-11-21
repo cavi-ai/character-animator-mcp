@@ -39,6 +39,11 @@ camera or microphone or signs into an account.
 change the project (`project_save_copy`, `import_media`, `scene_action`, `scene_export`, `project_select`) take one
 session lock per workspace. A second such request waits up to 15 seconds, then is refused.
 
+Menu actions and file handoffs reach Character Animator in the background. Opening a project, selecting a Project
+panel row and the Save As, Import and Export choosers need it in front. When a request brings it forward, or it
+comes forward on its own while the server waits for it, the server hands the front back to the application that
+had it when the request started.
+
 ## What it refuses
 
 A mutation is refused when the lease is missing, expired or belongs to another project, when an earlier operation

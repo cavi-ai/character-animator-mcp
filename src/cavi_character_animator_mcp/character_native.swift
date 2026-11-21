@@ -576,7 +576,9 @@ final class Observation {
                            "process_id": Int(opened.processIdentifier),
                            "launch_time": opened.launchDate?.timeIntervalSince1970 ?? 0]]
     }
-    func openAudioWav(_ parameters: [String: Any], _ observation: Observation) async throws -> [String: Any] {
+    // Opens a hash-pinned PSD or WAV copy in the running app, which imports it without coming to the front.
+    func openMedia(_ parameters: [String: Any], _ observation: Observation, kind: String) async throws -> [String: Any] {
+        let fileExtension = kind == "puppet_psd" ? "psd" : "wav"
         guard let app = observation.application,
               observation.state["running"] as? Bool == true,
               observation.state["process_count"] as? Int == 1,
@@ -592,12 +594,12 @@ final class Observation {
               let sourcePath = parameters["source_path"] as? String,
               let expectedHash = parameters["expected_sha256"] as? String,
               expectedHash.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
-            try fail("PRECONDITION_CHANGED", "WAV handoff requires the same running owned project without a prompt")
+            try fail("PRECONDITION_CHANGED", "File handoff requires the same running owned project without a prompt")
         }
         let source = URL(fileURLWithPath: sourcePath).standardizedFileURL
         let importDirectory = source.deletingLastPathComponent()
         let inputsDirectory = importDirectory.deletingLastPathComponent()
-        guard source.isFileURL, source.path == sourcePath, source.pathExtension.lowercased() == "wav",
+        guard source.isFileURL, source.path == sourcePath, source.pathExtension.lowercased() == fileExtension,
               importDirectory.lastPathComponent
                 .range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil,
               inputsDirectory.lastPathComponent == "inputs",
@@ -619,7 +621,7 @@ final class Observation {
               attributesBefore[.size] as? NSNumber == attributesAfter[.size] as? NSNumber,
               attributesBefore[.modificationDate] as? Date == attributesAfter[.modificationDate] as? Date,
               bytes.count == byteCount, sha(bytes) == expectedHash else {
-            try fail("INPUT_CHANGED", "The retained WAV does not match its hash-pinned private copy")
+            try fail("INPUT_CHANGED", "The retained file does not match its hash-pinned private copy")
         }
         let instances = NSRunningApplication.runningApplications(withBundleIdentifier: characterBundleID)
             .filter { $0.bundleURL?.standardizedFileURL.resolvingSymlinksInPath() == applicationURL }
@@ -628,9 +630,9 @@ final class Observation {
               (instances[0].launchDate?.timeIntervalSince1970 ?? 0)
                 == (app.launchDate?.timeIntervalSince1970 ?? 0),
               app.bundleURL?.standardizedFileURL.resolvingSymlinksInPath() == applicationURL else {
-            try fail("FOCUS_CHANGED", "The exact installed Character Animator process changed before WAV handoff")
+            try fail("FOCUS_CHANGED", "The exact installed Character Animator process changed before file handoff")
         }
-        phase = "audio_wav_handoff_dispatch"
+        phase = "\(kind)_handoff_dispatch"
         dispatched = true
         primaryCommandDispatched = true
         let configuration = NSWorkspace.OpenConfiguration()
@@ -644,7 +646,7 @@ final class Observation {
               opened.bundleURL?.standardizedFileURL.resolvingSymlinksInPath() == applicationURL,
               opened.processIdentifier == app.processIdentifier,
               (opened.launchDate?.timeIntervalSince1970 ?? 0) == (app.launchDate?.timeIntervalSince1970 ?? 0) else {
-            try fail("OPEN_IDENTITY_MISMATCH", "WAV handoff did not use the already-running Character Animator process")
+            try fail("OPEN_IDENTITY_MISMATCH", "File handoff did not use the already-running Character Animator process")
         }
         let after = try observe()
         guard after.application?.processIdentifier == app.processIdentifier,
@@ -655,10 +657,10 @@ final class Observation {
               after.state["process_count"] as? Int == 1,
               after.state["project_roots"] as? [String] == [root],
               after.state["authentication_or_permission_prompt"] as? Bool != true else {
-            try fail("PRECONDITION_CHANGED", "Character Animator process, project root or prompt state changed after WAV handoff")
+            try fail("PRECONDITION_CHANGED", "Character Animator process, project root or prompt state changed after file handoff")
         }
         return ["state": after.state,
-                "result": ["status": "native_audio_wav_handoff_requested", "completion": "unverified",
+                "result": ["status": "native_\(kind)_handoff_requested", "completion": "unverified",
                            "source_path": source.path, "sha256": expectedHash, "bytes": byteCount,
                            "process_id": Int(app.processIdentifier),
                            "launch_time": app.launchDate?.timeIntervalSince1970 ?? 0]]
@@ -997,6 +999,27 @@ final class Observation {
               hasMatchingOnScreenWindow(afterRoot, pid: app.processIdentifier) else {
             try fail("FOCUS_CHANGED", "Mission Control selection did not expose the same Character Animator window on screen")
         }
+    }
+    /// Brings the recorded application back to the front, only while Character Animator holds it.
+    func returnFocus(_ parameters: [String: Any]) async throws -> [String: Any] {
+        guard let pid = parameters["pid"] as? Int, pid > 0, let launchTime = parameters["launch_time"] as? Double else {
+            try fail("INVALID_ARGUMENT", "Return focus requires the recorded application pid and launch time")
+        }
+        guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == characterBundleID else { return ["status": "not_needed"] }
+        guard let target = NSRunningApplication(processIdentifier: pid_t(pid)), !target.isTerminated,
+              target.bundleIdentifier != characterBundleID,
+              (target.launchDate?.timeIntervalSince1970 ?? 0) == launchTime else {
+            return ["status": "not_returned", "reason": "application_gone"]
+        }
+        phase = "return_focus_dispatch"
+        _ = AXUIElementSetAttributeValue(AXUIElementCreateApplication(target.processIdentifier), "AXFrontmost" as CFString, kCFBooleanTrue)
+        _ = target.activate(options: [])
+        let deadline = ProcessInfo.processInfo.systemUptime + 1.0
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier { return ["status": "returned"] }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return ["status": "not_returned", "reason": "activation_not_observed"]
     }
     func focusApplication(_ observation: Observation) async throws {
         guard let root = observation.root, let app = observation.application else { try fail("APPLICATION_UNAVAILABLE", "Character Animator is not running") }
@@ -1968,6 +1991,16 @@ final class Observation {
             }
             progress("request_started")
         }
+        if operation == "front_application" {
+            var result: [String: Any] = ["status": "observed"]
+            if let front = NSWorkspace.shared.frontmostApplication {
+                result["front_application"] = ["pid": Int(front.processIdentifier),
+                                               "bundle_id": front.bundleIdentifier ?? "",
+                                               "launch_time": front.launchDate?.timeIntervalSince1970 ?? 0]
+            }
+            return ["state": [String: Any](), "result": result]
+        }
+        if operation == "return_focus" { return ["state": [String: Any](), "result": try await returnFocus(parameters)] }
         phase = "observation"
         let observation = try observe(full: operation != "status")
         if operation == "status" || operation == "inspect" { return ["state": observation.state, "result": ["status": "observed"]] }
@@ -1992,8 +2025,8 @@ final class Observation {
         } else {
             try expected(request, observation: observation)
         }
-        if operation == "open_audio_wav" {
-            return try await openAudioWav(parameters, observation)
+        if operation == "open_audio_wav" || operation == "open_puppet_psd" {
+            return try await openMedia(parameters, observation, kind: operation == "open_puppet_psd" ? "puppet_psd" : "audio_wav")
         }
         if operation == "chooser_continue_directory" {
             let result = try await continueDirectoryEntry(observation, parameters: parameters)
@@ -2031,36 +2064,10 @@ final class Observation {
             return try await projectSelect(parameters, observation: observation)
         } else if commandPaths[operation] != nil {
             try ownedRoot(parameters, observation)
-            guard observation.focusedWindow.map({ bool($0, "AXModal") == true }) != true else { try fail("UNEXPECTED_MODAL", "Resolve the current modal before requesting another command") }
-            try await focusApplication(observation)
-            let ready = try observe()
-            try ownedRoot(parameters, ready)
-            guard ready.state["authentication_or_permission_prompt"] as? Bool != true,
-                  ready.focusedWindow.map({ bool($0, "AXModal") == true }) != true else {
-                try fail("UNEXPECTED_MODAL", "A prompt or modal interrupted native menu activation")
-            }
-                // Activation intentionally changes frontmost and hidden. Every other observed
-                // precondition must remain identical, and the target must now be active.
-                var activatedState = observation.state
-                activatedState.removeValue(forKey: "fingerprint")
-                activatedState["frontmost"] = true
-                activatedState["hidden"] = false
-                if observation.focusedWindow == nil && safeBackgroundMain(observation) {
-                    let canvases = observation.nodes.filter { element, _ in
-                        text(element, "AXRole") == "AXLayoutArea"
-                            && text(element, "AXTitle") != nil && frame(element) != nil
-                            && bool(element, "AXModal") != true
-                    }
-                    if canvases.count == 1, let focused = ready.focusedWindow,
-                       CFEqual(focused, canvases[0].0) {
-                        activatedState["focused_window"] = ready.state["focused_window"]
-                    }
-                }
-                guard ready.state["frontmost"] as? Bool == true,
-                      ready.state["fingerprint"] as? String == sha(try canonical(fingerprintValue(activatedState))) else {
-                    try fail("STALE_STATE", "Native state changed during activation; inspect the current selection before dispatch")
-                }
-                guard let command = ready.menuElements[operation] else { try fail("CAPABILITY_UNAVAILABLE", "Native command is not exposed in this application version") }
+            guard observation.state["authentication_or_permission_prompt"] as? Bool != true,
+                  observation.focusedWindow.map({ bool($0, "AXModal") == true }) != true else { try fail("UNEXPECTED_MODAL", "Resolve the current modal before requesting another command") }
+            // The menu item is pressed through Accessibility, which reaches the app without bringing it to the front.
+            guard let command = observation.menuElements[operation] else { try fail("CAPABILITY_UNAVAILABLE", "Native command is not exposed in this application version") }
             phase = "menu_dispatch"
             try perform(command)
         } else if operation == "chooser_destination" {

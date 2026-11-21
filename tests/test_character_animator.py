@@ -45,6 +45,7 @@ class NativeFixture:
         self.last_continue_chooser_parameters = None
         self.last_import_parameters = None
         self.last_audio_wav_parameters = None
+        self.last_handoff_parameters = None
         self.fail = False
         self.directory_transition = False
         self.fail_submit = False
@@ -64,17 +65,37 @@ class NativeFixture:
         # Visible Project panel rows; None means screen capture is unavailable.
         self.project_rows = None
         self.rows_after_import = None
+        # Rows a handoff import shows only after late_row_reads more Project panel reads.
+        self.late_rows = None
+        self.late_row_reads = 0
         self.rows_after_scene = None
         self.import_busy_inspections = 0
         self.export_frames = 0
+        # The application in front when a request starts, and each focus hand-back requested.
+        self.front_application = None
+        self.focus_returns = []
 
     def call(self, operation, parameters=None, expected=None, cancelled=None):
         self.calls.append(operation)
+        if operation == "front_application":
+            return {"version": 1, "ok": True, "operation": operation, "state": {},
+                    "result": {"status": "observed", "front_application": copy.deepcopy(self.front_application)}}
+        if operation == "return_focus":
+            self.focus_returns.append(copy.deepcopy(parameters))
+            returned = self.state.get("frontmost") is True
+            self.state["frontmost"] = False
+            return {"version": 1, "ok": True, "operation": operation, "state": {},
+                    "result": {"status": "returned" if returned else "not_needed"}}
         if operation == "import":
             self.last_import_parameters = copy.deepcopy(parameters or {})
         if expected is not None and expected["fingerprint"] != self.state["fingerprint"]:
             raise CharacterRejected("Stale observation", "STALE_STATE")
         if operation == "project_items":
+            if self.late_rows is not None:
+                if self.late_row_reads:
+                    self.late_row_reads -= 1
+                else:
+                    self.project_rows, self.late_rows = self.late_rows, None
             if self.project_rows is None:
                 raise CharacterRejected("Fixture screen capture unavailable", "SCREEN_PERMISSION_UNAVAILABLE")
             return {"version": 1, "ok": True, "operation": operation,
@@ -89,15 +110,18 @@ class NativeFixture:
                 self.project_rows = self.rows_after_import
         if operation == "add_to_new_scene" and self.rows_after_scene is not None:
             self.project_rows = self.rows_after_scene
-        if operation == "open_audio_wav":
-            self.last_audio_wav_parameters = copy.deepcopy(parameters or {})
+        if operation in ("open_audio_wav", "open_puppet_psd"):
+            self.last_handoff_parameters = copy.deepcopy(parameters or {})
+            if operation == "open_audio_wav":
+                self.last_audio_wav_parameters = copy.deepcopy(parameters or {})
             if self.fail_audio_wav_handoff:
-                raise CharacterUnknown("Fixture WAV handoff outcome unknown")
+                raise CharacterUnknown("Fixture handoff outcome unknown")
             if self.rows_after_import is not None:
                 self.project_rows = self.rows_after_import
+            kind = "audio_wav" if operation == "open_audio_wav" else "puppet_psd"
             return {"version": 1, "ok": True, "operation": operation,
                     "state": copy.deepcopy(self.state),
-                    "result": {"status": "native_audio_wav_handoff_requested", "completion": "unverified"}}
+                    "result": {"status": f"native_{kind}_handoff_requested", "completion": "unverified"}}
         if (operation == "chooser_destination"
                 and (parameters or {}).get("kind") == "export_png_wav"
                 and self.fail_export_destination):
@@ -1029,6 +1053,43 @@ class CharacterOwnershipTests(unittest.TestCase):
         self.assertEqual(self.native.calls[len(calls_before):].count("open_audio_wav"), 1)
         self.assertEqual(self.native.calls[len(calls_before):].count("continue_chooser"), 0)
 
+    def test_puppet_psd_uses_hash_pinned_native_file_handoff(self):
+        lease = self.claim()
+        self.client.save_copy("copies", "Owned", lease["lease_id"])
+        self.native.state.update(running=True, process_count=1)
+        source = self.root / "workspace/hero.psd"
+        source.write_bytes(b"fixture PSD bytes")
+        calls_before = list(self.native.calls)
+
+        result = self.client.import_media("hero.psd", "puppet_psd", lease["lease_id"])
+
+        self.assertEqual(result["status"], "native_import_submitted")
+        self.assertEqual(result["native"]["operation"], "open_puppet_psd")
+        self.assertEqual(result["native"]["result"]["status"], "native_puppet_psd_handoff_requested")
+        staged = Path(result["import_copy"]["path"])
+        self.assertEqual(staged.read_bytes(), source.read_bytes())
+        self.assertEqual(self.native.last_handoff_parameters["source_path"], str(staged))
+        self.assertEqual(self.native.last_handoff_parameters["expected_sha256"], result["import_copy"]["sha256"])
+        self.assertEqual(self.native.calls[len(calls_before):].count("import"), 0)
+        self.assertEqual(self.native.calls[len(calls_before):].count("continue_chooser"), 0)
+
+    def test_uncertain_puppet_psd_handoff_is_not_replayed_through_chooser(self):
+        lease = self.claim()
+        self.client.save_copy("copies", "Owned", lease["lease_id"])
+        self.native.state.update(running=True, process_count=1)
+        (self.root / "workspace/hero.psd").write_bytes(b"fixture PSD bytes")
+        self.native.fail_audio_wav_handoff = True
+        with self.assertRaisesRegex(CharacterUnknown, "handoff outcome unknown"):
+            self.client.import_media("hero.psd", "puppet_psd", lease["lease_id"])
+        pending = self.client.inspect()["pending_operation"]
+        self.native.fail_audio_wav_handoff = False
+
+        with self.assertRaisesRegex(CharacterRejected, "cannot be replayed"):
+            self.client.operation_control("continue_import", pending["operation_id"], lease["lease_id"])
+
+        self.assertEqual(self.native.calls.count("continue_chooser"), 0)
+        self.assertEqual(self.client.inspect()["pending_operation"]["operation_id"], pending["operation_id"])
+
     def test_uncertain_audio_wav_handoff_is_not_replayed_through_chooser(self):
         lease = self.claim()
         self.client.save_copy("copies", "Owned", lease["lease_id"])
@@ -1391,6 +1452,56 @@ class CharacterOwnershipTests(unittest.TestCase):
 
         self.assertEqual(result["completion"], "observed")
         self.assertEqual(result["project_item"], {"name": "dialogue", "type": "audio"})
+
+    def test_handed_off_psd_observes_a_row_drawn_after_the_app_is_idle(self):
+        lease = self.claim()
+        self.client.save_copy("copies", "Owned", lease["lease_id"])
+        self.native.state.update(running=True, process_count=1)
+        (self.root / "workspace/Pip.psd").write_bytes(b"fixture PSD bytes")
+        self.native.project_rows = [{"name": "dialogue", "type": "audio"}]
+        self.native.late_rows = [{"name": "dialogue", "type": "audio"}, {"name": "Pip", "type": "puppet"}]
+        self.native.late_row_reads = 3
+
+        with patch("cavi_character_animator_mcp.animator.ROW_SECONDS", 0):
+            result = self.client.import_media("Pip.psd", "puppet_psd", lease["lease_id"])
+
+        self.assertEqual(result["completion"], "observed")
+        self.assertEqual(result["project_item"], {"name": "Pip", "type": "puppet"})
+
+    def test_focus_returns_to_the_application_in_front_when_the_request_started(self):
+        lease = self.claim()
+        self.client.save_copy("copies", "Owned", lease["lease_id"])
+        self.native.state["fingerprint"] = "b" * 64
+        self.native.front_application = {"pid": 42, "bundle_id": "com.adobe.Character-Animator.application",
+                                         "launch_time": 1.0}
+
+        self.client.project_select("TestPuppet", "puppet", False, "b" * 64, lease["lease_id"])
+
+        self.assertEqual(self.native.focus_returns, [])
+        self.assertTrue(self.native.state["frontmost"])
+        self.native.front_application = {"pid": 7, "bundle_id": "com.example.editor", "launch_time": 7.0}
+
+        self.client.project_select("TestPuppet", "puppet", False, "b" * 64, lease["lease_id"])
+
+        self.assertEqual(self.native.focus_returns, [{"pid": 7, "launch_time": 7.0}])
+        self.assertFalse(self.native.state["frontmost"])
+
+    def test_focus_returns_while_a_handed_off_file_is_still_being_read(self):
+        lease = self.claim()
+        self.client.save_copy("copies", "Owned", lease["lease_id"])
+        self.native.state.update(running=True, process_count=1)
+        (self.root / "workspace/Pip.psd").write_bytes(b"fixture PSD bytes")
+        self.native.project_rows = [{"name": "dialogue", "type": "audio"}]
+        self.native.late_rows = [{"name": "dialogue", "type": "audio"}, {"name": "Pip", "type": "puppet"}]
+        self.native.late_row_reads = 3
+        self.native.front_application = {"pid": 7, "bundle_id": "com.example.editor", "launch_time": 7.0}
+
+        with patch("cavi_character_animator_mcp.animator.ROW_SECONDS", 0):
+            result = self.client.import_media("Pip.psd", "puppet_psd", lease["lease_id"])
+
+        self.assertEqual(result["completion"], "observed")
+        self.assertIs(result["native_after"]["state"]["frontmost"], False)
+        self.assertEqual(self.native.focus_returns[0], {"pid": 7, "launch_time": 7.0})
 
     def test_add_to_new_scene_observes_the_new_scene_row(self):
         lease = self.claim()
