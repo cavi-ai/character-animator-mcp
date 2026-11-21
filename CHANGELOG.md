@@ -4,6 +4,8 @@ Versions come from git tags; a pull request adds its lines under Unreleased and 
 
 ## Unreleased
 
+## 0.2.0 - 2026-11-21
+
 ### Added
 
 - `capture` returns the window PNG as image content, at most 1568 px on its long side, beside its receipt.
