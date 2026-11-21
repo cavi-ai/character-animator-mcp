@@ -1,8 +1,10 @@
 # Importing and exporting
 
 Every call here needs the `lease_id` of an owned project copy; see [Project copies and
-ownership](project-copies.md). Each reports `completion` `unverified` or `native_export` `not_verified`: the
-server proves what it submitted and what files exist, not that Character Animator did the work.
+ownership](project-copies.md). An import, a new scene and an export wait for Character Animator to finish and
+report `completion` `observed` when the server sees the new Project row or the written files, otherwise
+`unverified`. `export_inspect` and `export_ingest` report `native_export` `not_verified`: they check files, not
+how Character Animator made them.
 
 ## Import a puppet or dialogue
 
@@ -16,11 +18,12 @@ empty and at most 1 GiB. The server hashes it, makes a read-only copy in its pri
 copy and the source again, and imports the copy. The result lists the `source` and the `import_copy` with `path`,
 `sha256` and `bytes`.
 
-- A PSD goes through the application's Import chooser. `status` `native_import_submitted` means the chooser was
-  submitted, not that the puppet appears.
-- A WAV is handed to the already running application. A handoff receipt does not confirm the import: check that
-  the audio appears in the project's Audio rows with `capture` or `inspect`. A WAV handoff whose outcome is
-  uncertain is never replayed through the chooser.
+- A PSD goes through the application's Import chooser. A WAV is handed to the already running application; a
+  WAV handoff whose outcome is uncertain is never replayed through the chooser.
+- The server reads the visible Project panel rows before the import and waits, up to 120 seconds, until no modal
+  is open and File > Import is enabled again. `completion` `observed` comes with `project_item`, the new puppet or
+  audio row, one named after the source file first. With `unverified`, the new row was not visible: scroll the
+  Project panel and call `inspect`. Reading rows needs Screen Recording access.
 
 If an Import chooser or its Go To sheet is already open for this project, the call adopts it instead of opening
 the menu again. Any other modal blocks the import.
@@ -33,7 +36,11 @@ recognized text; two matches are refused with `PROJECT_ITEM_AMBIGUOUS`. The `sel
 visual evidence, not a scene ID.
 
 `scene_action` runs one fixed menu action against the current selection: `add_to_new_scene`,
-`create_take_from_scene_audio`, `compute_lip_sync` or `export_png_wav`. Both tools take an
+`create_take_from_scene_audio`, `compute_lip_sync`, `set_work_area_to_selection` or `export_png_wav`, and waits
+for the application to finish. `add_to_new_scene` is `completion` `observed` with the new scene row in
+`project_item`. `inspect` reports `timeline_selection` `true` while timeline tracks or take bars are selected;
+`set_work_area_to_selection` then spans the work area from the earliest to the latest selected time. While the
+work area is enabled, `scene_export` exports only that range. Both tools take an
 `expected_fingerprint` copied from the latest `inspect` (`native.state.fingerprint`). The result's
 `expected_state_fingerprint` repeats it, and `native_after` (`scene_action`) or `native` (`project_select`) is the
 state observed after the dispatch.
@@ -48,9 +55,12 @@ state observed after the dispatch.
 `directory` must not exist and its parent must. `name` is a letter followed by up to 47 ASCII letters, digits, `_`
 or `-`. The server creates `directory`, then submits the Export Scene chooser with `name` for the owned scene.
 The result reports `status` `native_export_submitted`, `expected_output_directory` (`directory/name`) and
-`expected_xml` (`directory/name.xml`), and `output_verification` says to use `export_inspect` once the PNG and WAV
-files appear. If the chooser was not submitted the operation stays recorded as unknown; see
-[Recovery and unknown outcomes](recovery.md).
+`expected_xml` (`directory/name.xml`). The server then waits, up to 300 seconds, for `name.000.png` onward,
+`name.wav` and `name.json` in `directory/name` and for `directory/name.xml`. Once the frames are numbered without
+a gap, every file exists and nothing changed between two checks while the application was idle, `completion` is
+`observed` with `frame_count`, `frames` (`first` and `last`), `wav`, `json` and `xml`. Otherwise it is
+`unverified`, and `output_verification` says to use `export_inspect` once the files appear. If the chooser was
+not submitted the operation stays recorded as unknown; see [Recovery and unknown outcomes](recovery.md).
 
 ## Write an export recipe
 

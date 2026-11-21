@@ -77,15 +77,15 @@ scene audio, and checks the exported PNG frames and WAV into a pinned handoff.
 | Tool | Purpose |
 |---|---|
 | `character_status` | Report whether the application is running and reachable. |
-| `inspect` | Read the process, project root, native controls and unresolved operation state. |
+| `inspect` | Read the process, project root, native controls, visible Project panel rows, timeline selection and unresolved operation state. |
 | `capture` | Capture the Character Animator window with text recognition into a new workspace directory and return it as an image. |
 | `session_control` | Inspect, claim, renew, release or resume ownership of an open project. |
 | `project_prepare_copy` | Copy a closed `.chproj` tree into the workspace and verify its file hashes. |
 | `project_open_prepared_copy` | Open a prepared copy in the application. |
 | `project_save_copy` | Save an owned project as a new copy. |
-| `import_media` | Import a puppet PSD or a dialogue WAV. |
-| `scene_action` | Run one menu action on the selection: add to a new scene, create a take from scene audio, compute lip sync or export PNG and WAV. |
-| `scene_export` | Submit a PNG Sequence and WAV export of the owned scene into a new workspace directory. |
+| `import_media` | Import a puppet PSD or a dialogue WAV and report the new Project panel row. |
+| `scene_action` | Run one menu action on the selection: add to a new scene, create a take from scene audio, compute lip sync, set the work area to the selection or export PNG and WAV. |
+| `scene_export` | Export a PNG Sequence and WAV of the owned scene into a new workspace directory and report the written files. |
 | `project_select` | Select a puppet, audio or scene row in the Project panel by name. |
 | `operation_control` | Inspect, verify or continue a recorded native operation. |
 | `export_inspect` | Validate exported PNG and WAV files, their hashes and the dialogue sample timing. |
@@ -96,8 +96,9 @@ See the [tool reference](docs/character-animator-mcp/source/pages/reference/tool
 ## Closed projects and recovery
 
 For a closed Character Animator project, prepare a copy with `project_prepare_copy`, open that prepared copy, inspect
-its project root and claim it with `session_control` before editing. A WAV handoff receipt does not confirm import:
-check that the audio appears in the project's Audio rows. After a process exits, the operation control and session
+its project root and claim it with `session_control` before editing. An import is confirmed when its puppet or audio
+row appears in the Project panel; an unknown import whose row appears later is resolved with `operation_control`
+`reconcile_import`, with the application still running. After a process exits, the operation control and session
 control tools provide explicit reconciliation and lease release actions; they preserve unknown outcomes and project
 files. To record a cancelled import, the server asks you directly when your MCP client supports elicitation.
 

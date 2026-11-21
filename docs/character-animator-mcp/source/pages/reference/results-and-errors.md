@@ -7,9 +7,10 @@ structured content that matches the tool's output schema, and on failure an `err
 
 ## Results
 
-A tool that reports an operation returns `retry_safe` `false`. A native command that was dispatched is reported with
-`completion` `unverified` and a `status` such as `native_import_submitted`: the result proves what was submitted
-and what the application showed afterwards, not that the work is done. Fields named `launches_application`
+A tool that reports an operation returns `retry_safe` `false`. A native command reports `completion` `observed`
+when the server saw its result: a new Project row for `import_media` and `add_to_new_scene`, the written files for
+`scene_export`. Otherwise it reports `completion` `unverified` with a `status` such as `native_import_submitted`:
+the result proves what was submitted and what the application showed afterwards, not that the work is done. Fields named `launches_application`
 (`launches_applications` for the export tools) say whether the tool started Character Animator; only
 `project_open_prepared_copy` returns `true`.
 

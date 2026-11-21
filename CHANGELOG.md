@@ -14,6 +14,14 @@ Versions come from git tags; a pull request adds its lines under Unreleased and 
 
 ### Changed
 
+- `inspect` lists the visible Project panel rows as `project_items` and reports `timeline_selection`.
+- `import_media` and `scene_action` `add_to_new_scene` wait for Character Animator and report `completion` `observed`
+  with the new Project row as `project_item`.
+- `scene_export` waits for the exported frames, WAV and sidecars and reports `completion` `observed` with
+  `frame_count`, `frames`, `wav`, `json` and `xml`.
+- `scene_action` adds `set_work_area_to_selection`.
+- `operation_control` adds `reconcile_import`, which resolves an unknown import from its new Project row without
+  quitting Character Animator.
 - An unknown outcome's `next_action` is `inspect`.
 - The native helper launches through `cavi_mcp_core.owned_exec`, so it registers with the process owner that
   `CAVI_MCP_PROCESS_OWNER` names.

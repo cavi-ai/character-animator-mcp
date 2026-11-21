@@ -29,8 +29,9 @@ camera or microphone or signs into an account.
 1. Every path is relative to one workspace directory, set by `CAVI_ADOBE_WORKSPACE`.
 2. A tool that changes the application records the operation in a private journal before it dispatches a native
    command, then drives Character Animator through a native helper built from the packaged Swift source.
-3. The result says what was observed. A native menu or chooser that was dispatched is reported as submitted with
-   `completion` `unverified`: it is not treated as done until the application and the output files show it.
+3. The result says what was observed. A native menu or chooser that was dispatched is reported as submitted;
+   `completion` is `observed` only when the application or the output files show the result, otherwise
+   `unverified`.
 
 `session_control`, `project_prepare_copy`, `project_open_prepared_copy`, `operation_control` and the tools that
 change the project (`project_save_copy`, `import_media`, `scene_action`, `scene_export`, `project_select`) take one

@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -26,14 +27,38 @@ from .bridge import CharacterRejected, CharacterUnknown, NativeBridge
 
 IDENTIFIER = re.compile(r"^[0-9a-f]{32}$")
 CHARACTER_BUNDLE_ID = "com.adobe.Character-Animator.application"
-
-
+ITEM_TYPES = {"puppet_psd": "puppet", "audio_wav": "audio"}
+# Once the app is idle, a new Project row may take a few more captures to read.
+ROW_SECONDS = 5
 
 
 def project_identity(state):
     """Only observed native identity; never invent a file path from a window title."""
     return fingerprint({key: state.get(key) for key in
                         ("bundle_id", "pid", "launch_time", "project_roots")})
+
+
+def project_rows(items):
+    """The name and type of each reported Project panel row, or None when none were reported."""
+    if not isinstance(items, list):
+        return None
+    return [{"name": item["name"], "type": item["type"]} for item in items[:256]
+            if isinstance(item, dict) and isinstance(item.get("name"), str) and 1 <= len(item["name"]) <= 128
+            and item.get("type") in ("puppet", "audio", "scene")]
+
+
+def new_rows(before, after, item_type, names=()):
+    """Rows of item_type in after beyond those already in before; rows with one of names come first."""
+    remaining = Counter((row["name"].casefold(), row["type"]) for row in before)
+    preferred = {name.casefold() for name in names}
+    added = []
+    for row in after:
+        key = (row["name"].casefold(), row["type"])
+        if remaining[key]:
+            remaining[key] -= 1
+        elif row["type"] == item_type:
+            added.append(row)
+    return sorted(added, key=lambda row: row["name"].casefold() not in preferred)
 
 
 def _may_resume_atomic_continuation(packet):
@@ -53,6 +78,9 @@ class CharacterAnimator:
         self.directory = Path(directory) / fingerprint(str(self.workspace))[:16]
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.bridge = bridge or NativeBridge(Path(directory))
+        # How long a command waits for the app to finish, and an export for its files.
+        self.settle_seconds = 120
+        self.export_seconds = 300
 
     @contextmanager
     def locked(self, cancelled=None):
@@ -80,12 +108,86 @@ class CharacterAnimator:
             raise CharacterUnknown("Private operation state is not a bounded regular file")
         return json.loads(path.read_text())
 
-    def inspect(self, cancelled=None):
+    def inspect(self, cancelled=None, items=False):
         observed = self.bridge.call("inspect", cancelled=cancelled)
         state = observed["state"]
         pending = self.read("operation.json")
-        return {"project_id": project_identity(state), "native": observed,
-                "pending_operation": pending, "launches_application": False}
+        result = {"project_id": project_identity(state), "native": observed,
+                  "pending_operation": pending, "launches_application": False}
+        if items:
+            result["project_items"], result["project_items_error"] = self.project_items(cancelled)
+            # Timeline > Set Work Area to Selection is enabled only while timeline tracks are selected.
+            command = (state.get("menu_commands") or {}).get("set_work_area_to_selection") or {}
+            result["timeline_selection"] = command.get("enabled") if command.get("available") is True else None
+        return result
+
+    def project_items(self, cancelled=None):
+        """Visible Project panel rows read from the main window, or None and why they are unavailable."""
+        try:
+            observed = self.bridge.call("project_items", cancelled=cancelled)
+        except (CharacterRejected, CharacterUnknown) as exc:
+            return None, str(exc)
+        rows = project_rows(observed.get("result", {}).get("project_items"))
+        return (rows, None) if rows is not None else (None, "No Project panel rows were reported")
+
+    def _settle(self, seconds, cancelled=None):
+        """Inspect until no modal window is open and File > Import is enabled; (observation, idle)."""
+        deadline = time.monotonic() + seconds
+        while True:
+            observed = self.bridge.call("inspect", cancelled=cancelled)
+            state = observed["state"]
+            command = (state.get("menu_commands") or {}).get("import") or {}
+            busy = (any(window.get("modal") is True for window in state.get("windows", []))
+                    or (command.get("available") is True and command.get("enabled") is not True))
+            if not busy:
+                return observed, True
+            if time.monotonic() >= deadline or (cancelled is not None and cancelled.is_set()):
+                return observed, False
+            time.sleep(.25)
+
+    def _new_row(self, before, item_type, names=(), cancelled=None):
+        """Wait for the app to finish, then for a new Project row of item_type; (row or None, observation)."""
+        deadline = time.monotonic() + self.settle_seconds
+        idle_since = None
+        while True:
+            observed, idle = self._settle(max(0, deadline - time.monotonic()), cancelled)
+            if before is None or not idle:
+                return None, observed
+            rows, _ = self.project_items(cancelled)
+            added = new_rows(before, rows or [], item_type, names)
+            if added:
+                return added[0], observed
+            idle_since = idle_since or time.monotonic()
+            if (time.monotonic() - idle_since >= ROW_SECONDS or time.monotonic() >= deadline
+                    or (cancelled is not None and cancelled.is_set())):
+                return None, observed
+            time.sleep(.5)
+
+    def _export_outputs(self, target, name, cancelled=None):
+        """Wait until the export's frames, WAV and sidecars exist and stop changing while the app is idle."""
+        output = target / name
+        pattern = re.compile(re.escape(name) + r"\.(\d+)\.png")
+        files = [output / (name + ".wav"), output / (name + ".json"), target / (name + ".xml")]
+        deadline = time.monotonic() + self.export_seconds
+        previous = None
+        while True:
+            frames = []
+            if output.is_dir() and not output.is_symlink():
+                frames = sorted((path for path in output.iterdir() if pattern.fullmatch(path.name)),
+                                key=lambda path: int(pattern.fullmatch(path.name)[1]))
+            numbers = [int(pattern.fullmatch(path.name)[1]) for path in frames]
+            snapshot = None
+            if (numbers and numbers == list(range(numbers[0], numbers[0] + len(numbers)))
+                    and all(path.is_file() and not path.is_symlink() for path in [*frames, *files])):
+                snapshot = [(path.name, path.stat().st_size, path.stat().st_mtime_ns) for path in [*frames, *files]]
+            _, idle = self._settle(0, cancelled)
+            if snapshot is not None and idle and snapshot == previous:
+                return {"frame_count": len(frames), "frames": {"first": str(frames[0]), "last": str(frames[-1])},
+                        "wav": str(files[0]), "json": str(files[1]), "xml": str(files[2])}
+            if time.monotonic() >= deadline or (cancelled is not None and cancelled.is_set()):
+                return None
+            previous = snapshot
+            time.sleep(.5)
 
     def session(self, action, owner=None, expected_project=None, lease_id=None,
                 ttl_seconds=600, cancelled=None, pending_operation_id=None,
@@ -667,8 +769,11 @@ class CharacterAnimator:
 
     def mutate(self, operation, parameters, lease_id, *, owned=True, cancelled=None,
                continuation=None, intent=None, expected_fingerprint=None,
-               adopt_existing_import=False, native_operation=None):
-        """Record uncertainty before dispatch; no implicit retry or journal clearing."""
+               adopt_existing_import=False, native_operation=None, observe_items=False):
+        """Record uncertainty before dispatch; no implicit retry or journal clearing.
+
+        observe_items records the visible Project rows before dispatch and passes them to the continuation.
+        """
         with self.locked(cancelled):
             before = self.inspect(cancelled)
             lease = self.read("lease.json")
@@ -735,6 +840,8 @@ class CharacterAnimator:
                       "initial_native_operation": initial_native_operation,
                       "intent": intent,
                       "created_at": time.time(), "state": "pending", "retry_safe": False}
+            if observe_items:
+                packet["project_items_before"] = self.project_items(cancelled)[0]
             journal = self.directory / "operation.json"
             if cancelled is not None and cancelled.is_set():
                 raise CharacterRejected("Cancelled before native dispatch")
@@ -800,7 +907,8 @@ class CharacterAnimator:
                         packet.update(native=native, last_command=command)
                         write_json(journal, packet)
                         return native
-                    result = continuation(step, native, lease)
+                    result = (continuation(step, native, lease, packet["project_items_before"]) if observe_items
+                              else continuation(step, native, lease))
                     packet.update(state="completed", result=result)
                     receipts = self.directory / "operations"
                     receipts.mkdir(exist_ok=True, mode=0o700)
@@ -918,7 +1026,7 @@ class CharacterAnimator:
         if staged_digest != source_digest or after_digest != source_digest:
             raise CharacterRejected("Import source changed while its private copy was created")
 
-        def finish(step, native, lease):
+        def finish(step, native, lease, rows_before):
             roots = native["state"].get("project_roots", [])
             if len(roots) != 1 or roots[0] != lease.get("owned_root"):
                 raise CharacterUnknown("Import requires the exact owned project root")
@@ -946,17 +1054,21 @@ class CharacterAnimator:
                 current_source_digest = hashlib.file_digest(stream, "sha256").hexdigest()
             if current_staged_digest != source_digest or current_source_digest != source_digest:
                 raise CharacterUnknown("The import source or its retained copy changed during native selection")
-            return {"status": "native_import_submitted", "completion": "unverified",
+            row, settled = self._new_row(rows_before, ITEM_TYPES[kind], (original.stem, original.name), cancelled)
+            if project_identity(settled["state"]) != project_identity(native["state"]):
+                raise CharacterUnknown("Character Animator project changed while the import finished")
+            return {"status": "native_import_submitted", "completion": "observed" if row else "unverified",
                     "kind": kind, "source": {"path": str(original), "sha256": source_digest,
                                                "bytes": before.st_size},
                     "import_copy": {"path": str(staged), "sha256": staged_digest,
                                     "bytes": staged.stat().st_size},
-                    "native": after, "source_identity": "hashed_private_import_copy"}
+                    "project_item": row,
+                    "native": after, "native_after": settled, "source_identity": "hashed_private_import_copy"}
 
         wav_handoff = kind == "audio_wav"
         native_parameters = {"source_path": str(staged), "expected_sha256": staged_digest}
         return self.mutate("import", native_parameters, lease_id, cancelled=cancelled, continuation=finish,
-                           adopt_existing_import=True,
+                           adopt_existing_import=True, observe_items=True,
                            native_operation="open_audio_wav" if wav_handoff else None,
                            intent={"source": str(original), "source_sha256": source_digest,
                                    "source_bytes": before.st_size,
@@ -968,29 +1080,38 @@ class CharacterAnimator:
     def scene_action(self, action, expected_fingerprint, lease_id, cancelled=None):
         """Dispatch one exact observed menu action against an owned project's current selection."""
         actions = {"add_to_new_scene", "create_take_from_scene_audio", "compute_lip_sync",
-                   "export_png_wav"}
+                   "set_work_area_to_selection", "export_png_wav"}
         if action not in actions:
             raise CharacterRejected("Choose a supported fixed scene action")
         if not isinstance(expected_fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_fingerprint):
             raise CharacterRejected("Use the 64-character state fingerprint from the latest inspect")
+        new_scene = action == "add_to_new_scene"
 
-        def finish(_step, native, lease):
+        def finish(_step, native, lease, rows_before=None):
             before_state = native.get("state", {})
             if project_identity(before_state) != lease["project_id"]:
                 raise CharacterUnknown("Native menu dispatch changed the owned process or project")
-            after = self.bridge.call("inspect", cancelled=cancelled)
+            row = None
+            if action == "export_png_wav":
+                # The Export Scene chooser stays open; scene_export continues it.
+                after = self.bridge.call("inspect", cancelled=cancelled)
+            elif new_scene:
+                row, after = self._new_row(rows_before, "scene", cancelled=cancelled)
+            else:
+                after, _ = self._settle(self.settle_seconds, cancelled)
             after_state = after["state"]
             if (project_identity(after_state) != lease["project_id"]
                     or after_state.get("authentication_or_permission_prompt") is True):
                 raise CharacterUnknown("Scene action outcome requires inspection; project identity or prompt changed")
             return {"status": "native_scene_action_submitted", "action": action,
-                    "completion": "unverified", "expected_state_fingerprint": expected_fingerprint,
+                    "completion": "observed" if row else "unverified",
+                    "expected_state_fingerprint": expected_fingerprint, "project_item": row,
                     "native_dispatch": native, "native_after": after,
                     "selection_identity": "caller_observed_state_fingerprint"}
 
         return self.mutate(action, {}, lease_id, cancelled=cancelled, continuation=finish,
                            intent={"action": action, "expected_state_fingerprint": expected_fingerprint},
-                           expected_fingerprint=expected_fingerprint)
+                           expected_fingerprint=expected_fingerprint, observe_items=new_scene)
 
     def scene_export(self, directory, name, expected_fingerprint, lease_id, cancelled=None):
         """Submit one selected scene's PNG/WAV export into a new workspace directory."""
@@ -1032,12 +1153,15 @@ class CharacterAnimator:
                     or after["state"].get("authentication_or_permission_prompt") is True):
                 raise CharacterUnknown("Export submission changed the owned project or exposed a prompt")
             output_dir = target / name
-            return {"status": "native_export_submitted", "completion": "unverified",
-                    "directory": str(target), "name": name,
-                    "expected_output_directory": str(output_dir),
-                    "expected_xml": str(target / (name + ".xml")),
-                    "native_submission": selected, "native": after,
-                    "output_verification": "use export_inspect after PNG/WAV files appear"}
+            outputs = self._export_outputs(target, name, cancelled)
+            result = {"status": "native_export_submitted", "completion": "observed" if outputs else "unverified",
+                      "directory": str(target), "name": name,
+                      "expected_output_directory": str(output_dir),
+                      "expected_xml": str(target / (name + ".xml")),
+                      "native_submission": selected, "native": after, **(outputs or {})}
+            if not outputs:
+                result["output_verification"] = "use export_inspect after PNG/WAV files appear"
+            return result
 
         return self.mutate("export_png_wav", {}, lease_id, cancelled=cancelled,
                            continuation=finish,
@@ -1118,7 +1242,7 @@ class CharacterAnimator:
     def operation_control(self, action, operation_id, lease_id=None, cancelled=None,
                           user_confirmed_cancelled=False, confirmation="caller_reported"):
         if action not in ("inspect", "verify_copy", "continue_copy", "continue_import", "continue_export",
-                          "confirm_cancelled_import", "cancel_unsubmitted",
+                          "confirm_cancelled_import", "reconcile_import", "cancel_unsubmitted",
                           "reconcile_unsubmitted_copy", "reconcile_copy_after_exit",
                           "abandon_after_exit") or not IDENTIFIER.fullmatch(operation_id):
             raise CharacterRejected("Use a known operation ID and a supported operation control action")
@@ -1141,7 +1265,8 @@ class CharacterAnimator:
                 return self._reconcile_copy_after_exit(packet, lease, lease_id, observed, cancelled)
             if action == "abandon_after_exit":
                 return self._abandon_after_exit(packet, lease, lease_id, observed, cancelled)
-            required_operation = ("import" if action in ("continue_import", "confirm_cancelled_import")
+            required_operation = ("import" if action in ("continue_import", "confirm_cancelled_import",
+                                                         "reconcile_import")
                                   else "export_png_wav" if action == "continue_export" else "save_as")
             allowed_operations = ({"save_as", "export_png_wav"} if action == "cancel_unsubmitted"
                                   else {required_operation})
@@ -1325,7 +1450,7 @@ class CharacterAnimator:
                     if isinstance(exc, (CharacterRejected, CharacterUnknown)):
                         raise
                     raise CharacterUnknown("Export continuation remains unresolved; inspect its operation journal") from exc
-            if action in ("continue_import", "confirm_cancelled_import"):
+            if action in ("continue_import", "confirm_cancelled_import", "reconcile_import"):
                 intent = packet.get("intent", {})
                 if (action == "continue_import"
                         and packet.get("initial_native_operation") == "open_audio_wav"):
@@ -1376,7 +1501,8 @@ class CharacterAnimator:
                 if action == "continue_import" and not _may_resume_atomic_continuation(packet):
                     raise CharacterRejected("The native import continuation was already dispatched; inspect its outcome")
                 focus = state.get("focused_window") or {}
-                if action == "confirm_cancelled_import":
+                if action in ("confirm_cancelled_import", "reconcile_import"):
+                    label = "Cancellation confirmation" if action == "confirm_cancelled_import" else "Import reconciliation"
                     modal_windows = [window for window in state.get("windows", []) if window.get("modal") is True]
                     chooser_focused = (focus.get("identifier") in ("open-panel", "GoToWindow")
                                        or focus.get("title") == "Import")
@@ -1384,22 +1510,36 @@ class CharacterAnimator:
                                           or window.get("title") == "Import"
                                           for window in state.get("windows", []))
                     if modal_windows or chooser_focused or chooser_visible:
-                        raise CharacterRejected("Cancellation confirmation requires no visible modal, Import or Go To chooser")
+                        raise CharacterRejected(label + " requires no visible modal, Import or Go To chooser")
                     if (hash_file(source) != intent["source_sha256"]
                             or hash_file(staged) != intent["import_copy_sha256"]):
-                        raise CharacterRejected("Pending import files changed before cancellation reconciliation")
-                    result = {"status": "cancelled_user_reported",
-                              "completion": "user_reported_native_cancellation_unverified",
-                              "confirmation": confirmation,
-                              "kind": kind,
-                              "source": {"path": str(source), "sha256": intent["source_sha256"],
-                                         "bytes": source_before.st_size},
-                              "import_copy": {"path": str(staged), "sha256": intent["import_copy_sha256"],
-                                              "bytes": staged_before.st_size},
-                              "native": observed, "source_identity": "hashed_private_import_copy"}
-                    packet.update(state="resolved", resolution="user_reported_cancellation",
-                                  user_confirmed_cancelled=True, confirmation=confirmation,
-                                  cancellation_native=observed, result=result)
+                        raise CharacterRejected("Pending import files changed before " + label.lower())
+                    identity = {"source": {"path": str(source), "sha256": intent["source_sha256"],
+                                           "bytes": source_before.st_size},
+                                "import_copy": {"path": str(staged), "sha256": intent["import_copy_sha256"],
+                                                "bytes": staged_before.st_size},
+                                "native": observed, "source_identity": "hashed_private_import_copy"}
+                    if action == "reconcile_import":
+                        rows_before = packet.get("project_items_before")
+                        if not isinstance(rows_before, list):
+                            raise CharacterRejected("The pending import recorded no Project rows to compare")
+                        rows, error = self.project_items(cancelled)
+                        if rows is None:
+                            raise CharacterRejected("Project rows are unavailable: " + error)
+                        added = new_rows(rows_before, rows, ITEM_TYPES[kind], (source.stem, source.name))
+                        if not added:
+                            raise CharacterRejected(f"No new {ITEM_TYPES[kind]} row is visible in the Project "
+                                                    "panel; the import stays unresolved")
+                        result = {"status": "native_import_observed", "completion": "observed", "kind": kind,
+                                  "project_item": added[0], **identity}
+                        packet.update(state="resolved", resolution="observed_project_row", result=result)
+                    else:
+                        result = {"status": "cancelled_user_reported",
+                                  "completion": "user_reported_native_cancellation_unverified",
+                                  "confirmation": confirmation, "kind": kind, **identity}
+                        packet.update(state="resolved", resolution="user_reported_cancellation",
+                                      user_confirmed_cancelled=True, confirmation=confirmation,
+                                      cancellation_native=observed, result=result)
                     receipts = self.directory / "operations"
                     receipts.mkdir(exist_ok=True, mode=0o700)
                     write_json(receipts / (operation_id + ".json"), packet)

@@ -66,8 +66,9 @@ fingerprint:
  "lease_id": "<lease_id>"}}
 ```
 
-Both results report `completion` `unverified`: the menu was dispatched. Look at the application with `capture`
-or `inspect` to see the outcome before the next step. A fingerprint that no longer matches the application is
+Both results report `completion` `unverified`: `scene_action` waits until the application is idle, but a
+lip-sync take adds no Project row to observe. Look at the application with `capture` or `inspect` to see the
+outcome before the next step. A fingerprint that no longer matches the application is
 refused before anything is dispatched, with the message "Observed selection or native state changed; inspect again
 before acting".
 

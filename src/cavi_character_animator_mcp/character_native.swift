@@ -20,7 +20,8 @@ let commandPaths: [String: [String]] = [
     "export_png_wav": ["File", "Export", "PNG Sequence and WAV..."],
     "compute_lip_sync": ["Timeline", "Compute Lip Sync Take from Audio and Transcript"],
     "add_to_new_scene": ["Scene", "Add to New Scene"],
-    "create_take_from_scene_audio": ["Timeline", "Compute Lip Sync Take from Scene Audio"]
+    "create_take_from_scene_audio": ["Timeline", "Compute Lip Sync Take from Scene Audio"],
+    "set_work_area_to_selection": ["Timeline", "Set Work Area to Selection"]
 ]
 
 struct NativeFailure: Error {
@@ -813,6 +814,10 @@ final class Observation {
         let candidates = content.windows.filter { $0.owningApplication?.processID == app.processIdentifier && $0.frame.width > 300 && $0.frame.height > 100 }
         let selected: SCWindow?
         if let id = parameters["window_id"] as? UInt32 { selected = candidates.first { $0.windowID == id } }
+        // The main window is the largest; an open chooser is a separate, smaller window.
+        else if parameters["main_window"] as? Bool == true {
+            selected = candidates.max { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
+        }
         else if let focused = observation.focusedWindow, let f = frame(focused) {
             selected = candidates.first { abs($0.frame.minX - f[0]) < 3 && abs($0.frame.minY - f[1]) < 3 && abs($0.frame.width - f[2]) < 3 && abs($0.frame.height - f[3]) < 3 }
                 ?? candidates.max { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
@@ -1837,44 +1842,13 @@ final class Observation {
               let frame = captureResult["frame"] as? [Double], frame.count == 4 else {
             try fail("CAPTURE_FAILED", "Project panel OCR or exact native window evidence is unavailable")
         }
-        func trimLeadingIcons(_ value: String) -> String {
-            String(value.unicodeScalars.drop(while: { !CharacterSet.alphanumerics.contains($0) }))
+        let matches = projectRows(ocr).filter { row in
+            (row["name"] as? String)?.caseInsensitiveCompare(name) == .orderedSame && row["type"] as? String == itemType
         }
-        func bounds(_ item: [String: Any]) -> [Double]? {
-            guard let value = item["bounds"] as? [Double], value.count == 4 else { return nil }
-            return value
-        }
-        let normalizedType = itemType.prefix(1).uppercased() + itemType.dropFirst().lowercased()
-        let names = ocr.filter { token in
-            guard let raw = token["text"] as? String, let box = bounds(token),
-                  (token["confidence"] as? Double ?? 0) >= 0.8 else { return false }
-            let centerX = box[0] + box[2] / 2, centerY = box[1] + box[3] / 2
-            return centerX < 0.18 && centerY > 0.70
-                && trimLeadingIcons(raw).caseInsensitiveCompare(name) == .orderedSame
-        }
-        let types = ocr.filter { token in
-            guard let raw = token["text"] as? String, let box = bounds(token),
-                  (token["confidence"] as? Double ?? 0) >= 0.8 else { return false }
-            let centerX = box[0] + box[2] / 2
-            return centerX >= 0.08 && centerX <= 0.35
-                && raw.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(normalizedType) == .orderedSame
-        }
-        var matches: [(name: [String: Any], type: [String: Any], nameBounds: [Double], typeBounds: [Double])] = []
-        for nameToken in names {
-            guard let nameBounds = bounds(nameToken) else { continue }
-            let nameY = nameBounds[1] + nameBounds[3] / 2
-            for typeToken in types {
-                guard let typeBounds = bounds(typeToken) else { continue }
-                let typeY = typeBounds[1] + typeBounds[3] / 2
-                if abs(nameY - typeY) <= min(0.006, max(nameBounds[3], typeBounds[3]) / 2) {
-                    matches.append((nameToken, typeToken, nameBounds, typeBounds))
-                }
-            }
-        }
-        guard matches.count == 1, let match = matches.first else {
+        guard matches.count == 1, let match = matches.first,
+              let nameBox = match["name_bounds"] as? [Double], let typeBox = match["type_bounds"] as? [Double] else {
             try fail("PROJECT_ITEM_AMBIGUOUS", "Expected one visible Project-panel name and matching Puppet/Audio/Scene type row")
         }
-        let nameBox = match.nameBounds
         let point = CGPoint(x: frame[0] + (nameBox[0] + nameBox[2] / 2) * frame[2],
                             y: frame[1] + (1 - (nameBox[1] + nameBox[3] / 2)) * frame[3])
         guard point.x >= frame[0], point.x <= frame[0] + frame[2],
@@ -1922,11 +1896,38 @@ final class Observation {
         }
         return ["state": after.state, "result": ["status": "native_project_item_selected",
             "completion": "unverified", "selection_evidence": ["ocr_identity": "observed_ocr_name_and_type",
-                "name": name, "item_type": itemType, "name_text": match.name["text"] ?? "",
-                "type_text": match.type["text"] ?? "", "window_id": windowID,
-                "name_bounds": match.nameBounds, "type_bounds": match.typeBounds,
+                "name": name, "item_type": itemType, "name_text": match["name_text"] ?? "",
+                "type_text": match["type_text"] ?? "", "window_id": windowID,
+                "name_bounds": nameBox, "type_bounds": typeBox,
                 "selection_point": [point.x, point.y], "extend": extend,
                 "capture_sha256": captureResult["sha256"] ?? ""]]]
+    }
+    // Project panel rows in window OCR, top to bottom: a confident name near the top left beside a
+    // Puppet, Audio or Scene type token on the same line. Bounds are Vision's, origin bottom left.
+    func projectRows(_ ocr: [[String: Any]]) -> [[String: Any]] {
+        let tokens: [(text: String, box: [Double])] = ocr.compactMap { token in
+            guard let text = token["text"] as? String, let box = token["bounds"] as? [Double], box.count == 4,
+                  (token["confidence"] as? Double ?? 0) >= 0.8 else { return nil }
+            return (text, box)
+        }
+        var rows: [[String: Any]] = []
+        for (typeIndex, typeToken) in tokens.enumerated() {
+            let typeText = typeToken.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let typeX = typeToken.box[0] + typeToken.box[2] / 2, typeY = typeToken.box[1] + typeToken.box[3] / 2
+            guard typeX >= 0.08, typeX <= 0.35,
+                  let type = ["puppet", "audio", "scene"].first(where: { typeText.caseInsensitiveCompare($0) == .orderedSame })
+            else { continue }
+            for (nameIndex, nameToken) in tokens.enumerated() where nameIndex != typeIndex {
+                let box = nameToken.box
+                let nameX = box[0] + box[2] / 2, nameY = box[1] + box[3] / 2
+                let name = String(nameToken.text.unicodeScalars.drop(while: { !CharacterSet.alphanumerics.contains($0) }))
+                guard nameX < 0.18, nameY > 0.70, !name.isEmpty,
+                      abs(nameY - typeY) <= min(0.006, max(box[3], typeToken.box[3]) / 2) else { continue }
+                rows.append(["name": name, "type": type, "name_text": nameToken.text, "type_text": typeToken.text,
+                             "name_bounds": box, "type_bounds": typeToken.box])
+            }
+        }
+        return rows.sorted { ($0["name_bounds"] as? [Double] ?? [0, 0])[1] > ($1["name_bounds"] as? [Double] ?? [0, 0])[1] }
     }
     func run(_ request: [String: Any]) async throws -> [String: Any] {
         guard let operation = request["operation"] as? String else { try fail("INVALID_ARGUMENT", "operation is required") }
@@ -1949,6 +1950,16 @@ final class Observation {
         if operation == "capture" {
             guard observation.state["authentication_or_permission_prompt"] as? Bool != true else { try fail("AUTHENTICATION_BOUNDARY", "Application prompt requires manual handling") }
             return ["state": observation.state, "result": try await capture(observation, parameters: parameters)]
+        }
+        if operation == "project_items" {
+            guard observation.state["authentication_or_permission_prompt"] as? Bool != true else { try fail("AUTHENTICATION_BOUNDARY", "Application prompt requires manual handling") }
+            let captured = try await capture(observation, parameters: ["main_window": true])
+            let rows = projectRows(captured["ocr"] as? [[String: Any]] ?? []).map { row in
+                ["name": row["name"] ?? "", "type": row["type"] ?? ""]
+            }
+            return ["state": observation.state, "result": ["status": "observed", "project_items": rows,
+                "scope": "visible_rows", "window_id": captured["window_id"] ?? 0,
+                "capture_sha256": captured["sha256"] ?? ""]]
         }
         phase = "precondition"
         if operation == "focus" || operation == "continue_chooser" {
