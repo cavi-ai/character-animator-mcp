@@ -324,6 +324,7 @@ async def import_media(source: str, kind: Literal["puppet_psd", "audio_wav"],
 
     PSDs use the native Import chooser. WAVs are handed to the already-running app. It waits for the app to
     finish; completion is observed with project_item when a new puppet or audio row appears in the Project panel.
+    The first WAV after a project opens is unverified: its row is drawn only once the Project panel is clicked.
     """
     return await execute(lambda cancelled: client().import_media(source, kind, lease_id, cancelled))
 
