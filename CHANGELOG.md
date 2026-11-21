@@ -23,6 +23,9 @@ Versions come from git tags; a pull request adds its lines under Unreleased and 
 - An unknown outcome's `next_action` is `inspect`.
 - `session_control` and `operation_control` refuse an argument their action does not use.
 - A tool that fails on a runtime or OS error returns that error's message.
+- Menu actions reach Character Animator without bringing it to the front, and `import_media` hands a PSD to the
+  running application as it does a WAV.
+- A request that brings Character Animator to the front hands the front back to the application that had it.
 - A `PROJECT_ITEM_AMBIGUOUS` message lists the Project panel rows it read.
 - The native helper launches through `cavi_mcp_core.owned_exec`, so it registers with the process owner that
   `CAVI_MCP_PROCESS_OWNER` names.

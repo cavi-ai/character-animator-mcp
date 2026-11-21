@@ -18,8 +18,9 @@ empty and at most 1 GiB. The server hashes it, makes a read-only copy in its pri
 copy and the source again, and imports the copy. The result lists the `source` and the `import_copy` with `path`,
 `sha256` and `bytes`.
 
-- A PSD goes through the application's Import chooser. A WAV is handed to the already running application; a
-  WAV handoff whose outcome is uncertain is never replayed through the chooser.
+- The copy is handed to the running application, which imports it without coming to the front. Without exactly
+  one running instance, the call uses the Import chooser. A handoff whose outcome is uncertain is never replayed
+  through the chooser.
 - The server reads the visible Project panel rows before the import and waits, up to 120 seconds, until no modal
   is open and File > Import is enabled again. `completion` `observed` comes with `project_item`, the new puppet or
   audio row, one named after the source file first. With `unverified`, the new row was not visible: scroll the

@@ -28,6 +28,8 @@ from .bridge import CharacterRejected, CharacterUnknown, NativeBridge
 IDENTIFIER = re.compile(r"^[0-9a-f]{32}$")
 CHARACTER_BUNDLE_ID = "com.adobe.Character-Animator.application"
 ITEM_TYPES = {"puppet_psd": "puppet", "audio_wav": "audio"}
+# Each import kind is opened by the running app without bringing it to the front.
+HANDOFFS = {"puppet_psd": "open_puppet_psd", "audio_wav": "open_audio_wav"}
 # Once the app is idle, a new Project row may take a few more captures to read.
 ROW_SECONDS = 5
 
@@ -81,9 +83,12 @@ class CharacterAnimator:
         # How long a command waits for the app to finish, and an export for its files.
         self.settle_seconds = 120
         self.export_seconds = 300
+        # The application in front when the current request started, while it is not Character Animator.
+        self.focus_owner = None
 
     @contextmanager
-    def locked(self, cancelled=None):
+    def locked(self, cancelled=None, return_focus=False):
+        """Own the application for one request; return_focus hands the front back when the request ends."""
         cancelled = cancelled or threading.Event()
         lock = FileLock(self.directory / "session.lock", follow=False)
         deadline = time.monotonic() + 15
@@ -96,9 +101,34 @@ class CharacterAnimator:
                 raise CharacterRejected("Another Character Animator request is still active")
             time.sleep(.05)
         try:
+            self.focus_owner = self._front_application() if return_focus else None
             yield
         finally:
-            lock.release()
+            try:
+                self._return_focus()
+            finally:
+                self.focus_owner = None
+                lock.release()
+
+    def _front_application(self):
+        try:
+            front = self.bridge.call("front_application")["result"].get("front_application")
+        except (CharacterRejected, CharacterUnknown):
+            return None
+        if (not isinstance(front, dict) or front.get("bundle_id") == CHARACTER_BUNDLE_ID
+                or type(front.get("pid")) is not int or type(front.get("launch_time")) not in (int, float)):
+            return None
+        return {"pid": front["pid"], "launch_time": front["launch_time"]}
+
+    def _return_focus(self):
+        """Bring back the application that was in front when the request started; True once it is."""
+        if self.focus_owner is None:
+            return False
+        try:
+            result = self.bridge.call("return_focus", self.focus_owner)["result"]
+        except (CharacterRejected, CharacterUnknown):
+            return False
+        return result.get("status") == "returned"
 
     def read(self, name):
         path = self.directory / name
@@ -135,6 +165,9 @@ class CharacterAnimator:
         deadline = time.monotonic() + seconds
         while True:
             observed = self.bridge.call("inspect", cancelled=cancelled)
+            # The app can bring itself forward while it works; the wait hands the front straight back.
+            if observed["state"].get("frontmost") is True and self._return_focus():
+                observed = self.bridge.call("inspect", cancelled=cancelled)
             state = observed["state"]
             command = (state.get("menu_commands") or {}).get("import") or {}
             busy = (any(window.get("modal") is True for window in state.get("windows", []))
@@ -145,8 +178,12 @@ class CharacterAnimator:
                 return observed, False
             time.sleep(.25)
 
-    def _new_row(self, before, item_type, names=(), cancelled=None):
-        """Wait for the app to finish, then for a new Project row of item_type; (row or None, observation)."""
+    def _new_row(self, before, item_type, names=(), cancelled=None, row_seconds=None):
+        """Wait for the app to finish, then for a new Project row of item_type; (row or None, observation).
+
+        row_seconds bounds the wait for the row once the app is idle, ROW_SECONDS by default.
+        """
+        row_seconds = ROW_SECONDS if row_seconds is None else row_seconds
         deadline = time.monotonic() + self.settle_seconds
         idle_since = None
         while True:
@@ -158,7 +195,7 @@ class CharacterAnimator:
             if added:
                 return added[0], observed
             idle_since = idle_since or time.monotonic()
-            if (time.monotonic() - idle_since >= ROW_SECONDS or time.monotonic() >= deadline
+            if (time.monotonic() - idle_since >= row_seconds or time.monotonic() >= deadline
                     or (cancelled is not None and cancelled.is_set())):
                 return None, observed
             time.sleep(.5)
@@ -198,7 +235,7 @@ class CharacterAnimator:
             raise CharacterRejected("Prepared copy IDs are accepted only for claim or open_prepared_copy")
         if type(ttl_seconds) is not int or not 30 <= ttl_seconds <= 3600:
             raise CharacterRejected("Lease lifetime must be 30..3600 seconds")
-        with self.locked(cancelled):
+        with self.locked(cancelled, return_focus=action == "open_prepared_copy"):
             observed = self.inspect(cancelled)
             identity = observed["project_id"]
             lease = self.read("lease.json")
@@ -774,7 +811,7 @@ class CharacterAnimator:
 
         observe_items records the visible Project rows before dispatch and passes them to the continuation.
         """
-        with self.locked(cancelled):
+        with self.locked(cancelled, return_focus=True):
             before = self.inspect(cancelled)
             lease = self.read("lease.json")
             if (lease is None or lease_id != lease["lease_id"] or lease["expires_at"] <= time.time()
@@ -800,7 +837,7 @@ class CharacterAnimator:
                 raise CharacterRejected("Exactly one observed native project root is required")
             parameters = {**parameters, "project_root": roots[0]}
             initial_native_operation = native_operation or operation
-            if (initial_native_operation == "open_audio_wav"
+            if (initial_native_operation in HANDOFFS.values()
                     and (before["native"]["state"].get("running") is not True
                          or before["native"]["state"].get("process_count") != 1)):
                 initial_native_operation = operation
@@ -994,7 +1031,7 @@ class CharacterAnimator:
         return selected
 
     def import_media(self, source, kind, lease_id, cancelled=None):
-        """Submit a hash-pinned PSD through Import or hand a WAV copy to the running app."""
+        """Hand a hash-pinned PSD or WAV copy to the running app without bringing it to the front."""
         extensions = {"puppet_psd": ".psd", "audio_wav": ".wav"}
         if kind not in extensions:
             raise CharacterRejected("Choose puppet_psd or audio_wav")
@@ -1030,13 +1067,12 @@ class CharacterAnimator:
             roots = native["state"].get("project_roots", [])
             if len(roots) != 1 or roots[0] != lease.get("owned_root"):
                 raise CharacterUnknown("Import requires the exact owned project root")
-            if (kind == "audio_wav"
-                    and native.get("operation") == "open_audio_wav"):
+            if native.get("operation") == HANDOFFS[kind]:
                 state = native["state"]
-                if (native.get("result", {}).get("status") != "native_audio_wav_handoff_requested"
+                if (native.get("result", {}).get("status") != f"native_{kind}_handoff_requested"
                         or project_identity(state) != lease.get("project_id")
                         or state.get("authentication_or_permission_prompt") is True):
-                    raise CharacterUnknown("The WAV handoff was not verified against the same owned project")
+                    raise CharacterUnknown("The file handoff was not verified against the same owned project")
                 after = native
             else:
                 arguments = {"kind": "import", "directory": str(staged.parent),
@@ -1054,7 +1090,11 @@ class CharacterAnimator:
                 current_source_digest = hashlib.file_digest(stream, "sha256").hexdigest()
             if current_staged_digest != source_digest or current_source_digest != source_digest:
                 raise CharacterUnknown("The import source or its retained copy changed during native selection")
-            row, settled = self._new_row(rows_before, ITEM_TYPES[kind], (original.stem, original.name), cancelled)
+            # A handed-off file leaves File > Import enabled while the app reads it, so its row is awaited until
+            # the settle deadline.
+            handed_off = native.get("operation") == HANDOFFS[kind]
+            row, settled = self._new_row(rows_before, ITEM_TYPES[kind], (original.stem, original.name), cancelled,
+                                         row_seconds=self.settle_seconds if handed_off else None)
             if project_identity(settled["state"]) != project_identity(native["state"]):
                 raise CharacterUnknown("Character Animator project changed while the import finished")
             return {"status": "native_import_submitted", "completion": "observed" if row else "unverified",
@@ -1065,11 +1105,9 @@ class CharacterAnimator:
                     "project_item": row,
                     "native": after, "native_after": settled, "source_identity": "hashed_private_import_copy"}
 
-        wav_handoff = kind == "audio_wav"
         native_parameters = {"source_path": str(staged), "expected_sha256": staged_digest}
         return self.mutate("import", native_parameters, lease_id, cancelled=cancelled, continuation=finish,
-                           adopt_existing_import=True, observe_items=True,
-                           native_operation="open_audio_wav" if wav_handoff else None,
+                           adopt_existing_import=True, observe_items=True, native_operation=HANDOFFS[kind],
                            intent={"source": str(original), "source_sha256": source_digest,
                                    "source_bytes": before.st_size,
                                    "import_copy": str(staged), "import_copy_sha256": staged_digest,
@@ -1252,7 +1290,8 @@ class CharacterAnimator:
             raise CharacterRejected("confirmation must be elicited or caller_reported")
         if action == "confirm_cancelled_import" and not user_confirmed_cancelled:
             raise CharacterRejected("Confirm only after the user reports that the import was cancelled")
-        with self.locked(cancelled):
+        chooser = action in ("continue_copy", "continue_import", "continue_export", "cancel_unsubmitted")
+        with self.locked(cancelled, return_focus=chooser):
             packet = self.read("operation.json")
             if not packet or packet["operation_id"] != operation_id:
                 raise CharacterRejected("No matching unresolved operation")
@@ -1453,8 +1492,8 @@ class CharacterAnimator:
             if action in ("continue_import", "confirm_cancelled_import", "reconcile_import"):
                 intent = packet.get("intent", {})
                 if (action == "continue_import"
-                        and packet.get("initial_native_operation") == "open_audio_wav"):
-                    raise CharacterRejected("An uncertain WAV handoff cannot be replayed through the file chooser")
+                        and packet.get("initial_native_operation") in HANDOFFS.values()):
+                    raise CharacterRejected("An uncertain file handoff cannot be replayed through the file chooser")
                 kind = intent.get("kind")
                 extension = {"puppet_psd": ".psd", "audio_wav": ".wav"}.get(kind)
                 if extension is None:

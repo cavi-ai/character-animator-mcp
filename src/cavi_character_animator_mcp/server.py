@@ -333,8 +333,8 @@ async def import_media(source: str, kind: Literal["puppet_psd", "audio_wav"],
                        lease_id: str) -> CharacterImportedMedia:
     """Import a hash-pinned workspace PSD puppet or WAV into the owned project.
 
-    PSDs use the native Import chooser. WAVs are handed to the already-running app. It waits for the app to
-    finish; completion is observed with project_item when a new puppet or audio row appears in the Project panel.
+    The copy is handed to the running app without bringing it to the front. It waits for the app to finish;
+    completion is observed with project_item when a new puppet or audio row appears in the Project panel.
     """
     return await execute(lambda cancelled: client().import_media(source, kind, lease_id, cancelled))
 
