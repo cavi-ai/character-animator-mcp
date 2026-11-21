@@ -1902,26 +1902,33 @@ final class Observation {
                 "selection_point": [point.x, point.y], "extend": extend,
                 "capture_sha256": captureResult["sha256"] ?? ""]]]
     }
-    // Project panel rows in window OCR, top to bottom: a confident name near the top left beside a
-    // Puppet, Audio or Scene type token on the same line. Bounds are Vision's, origin bottom left.
+    // Project panel rows in window OCR, top to bottom: a name near the top left beside a confident
+    // Puppet, Audio or Scene type token on the same line. A name line starts with the row's type icon,
+    // read as one glyph and a space ("¿ Pip", "# dialogue.wav", "2 Scene 1"), which can lower the line's
+    // confidence to 0.5. Bounds are Vision's, origin bottom left.
     func projectRows(_ ocr: [[String: Any]]) -> [[String: Any]] {
-        let tokens: [(text: String, box: [Double])] = ocr.compactMap { token in
-            guard let text = token["text"] as? String, let box = token["bounds"] as? [Double], box.count == 4,
-                  (token["confidence"] as? Double ?? 0) >= 0.8 else { return nil }
-            return (text, box)
+        let tokens: [(text: String, box: [Double], confidence: Double)] = ocr.compactMap { token in
+            guard let text = token["text"] as? String, let box = token["bounds"] as? [Double], box.count == 4
+            else { return nil }
+            return (text, box, token["confidence"] as? Double ?? 0)
         }
         var rows: [[String: Any]] = []
         for (typeIndex, typeToken) in tokens.enumerated() {
             let typeText = typeToken.text.trimmingCharacters(in: .whitespacesAndNewlines)
             let typeX = typeToken.box[0] + typeToken.box[2] / 2, typeY = typeToken.box[1] + typeToken.box[3] / 2
-            guard typeX >= 0.08, typeX <= 0.35,
+            guard typeToken.confidence >= 0.8, typeX >= 0.08, typeX <= 0.35,
                   let type = ["puppet", "audio", "scene"].first(where: { typeText.caseInsensitiveCompare($0) == .orderedSame })
             else { continue }
             for (nameIndex, nameToken) in tokens.enumerated() where nameIndex != typeIndex {
                 let box = nameToken.box
                 let nameX = box[0] + box[2] / 2, nameY = box[1] + box[3] / 2
-                let name = String(nameToken.text.unicodeScalars.drop(while: { !CharacterSet.alphanumerics.contains($0) }))
-                guard nameX < 0.18, nameY > 0.70, !name.isEmpty,
+                var line = Substring(nameToken.text.trimmingCharacters(in: .whitespaces))
+                if line.count > 2, let icon = line.first, !icon.isLetter, line.dropFirst().first == " " {
+                    line = line.dropFirst(2)
+                }
+                let text = String(line)
+                let name = String(text.unicodeScalars.drop(while: { !CharacterSet.alphanumerics.contains($0) }))
+                guard nameToken.confidence >= 0.5, nameX < 0.18, nameY > 0.70, !name.isEmpty,
                       abs(nameY - typeY) <= min(0.006, max(box[3], typeToken.box[3]) / 2) else { continue }
                 rows.append(["name": name, "type": type, "name_text": nameToken.text, "type_text": typeToken.text,
                              "name_bounds": box, "type_bounds": typeToken.box])

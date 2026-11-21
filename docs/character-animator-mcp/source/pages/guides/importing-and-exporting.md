@@ -24,6 +24,8 @@ copy and the source again, and imports the copy. The result lists the `source` a
   is open and File > Import is enabled again. `completion` `observed` comes with `project_item`, the new puppet or
   audio row, one named after the source file first. With `unverified`, the new row was not visible: scroll the
   Project panel and call `inspect`. Reading rows needs Screen Recording access.
+- The first WAV imported after a project opens stays off the Project panel until the panel is clicked, so that
+  import returns `unverified`; `inspect` lists its row after the next `project_select`.
 
 If an Import chooser or its Go To sheet is already open for this project, the call adopts it instead of opening
 the menu again. Any other modal blocks the import.
