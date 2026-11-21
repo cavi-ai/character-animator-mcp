@@ -1840,6 +1840,38 @@ class CharacterOwnershipTests(unittest.TestCase):
     def test_confirm_cancelled_import_asks_the_user_on_the_2025_protocol(self):
         self.confirm_cancelled_import_through_client("legacy")
 
+    def test_action_tools_refuse_arguments_their_action_does_not_use(self):
+        async def calls():
+            async with Client(mcp) as session:
+                return (await session.call_tool("session_control", {"action": "inspect", "lease_id": "a" * 32}),
+                        await session.call_tool("session_control", {"action": "release", "ttl_seconds": 60,
+                                                                    "lease_id": "a" * 32}),
+                        await session.call_tool("operation_control", {"action": "inspect",
+                                                                      "operation_id": "b" * 32,
+                                                                      "lease_id": "a" * 32}))
+
+        with patch("cavi_character_animator_mcp.server.client", return_value=self.client):
+            results = asyncio.run(calls())
+
+        for result, unused in zip(results, ("lease_id", "ttl_seconds", "lease_id"), strict=True):
+            self.assertTrue(result.is_error, result.content)
+            self.assertEqual(result.structured_content["error"]["outcome"], "rejected")
+            self.assertIn("Not valid for action=", result.content[0].text)
+            self.assertIn(unused, result.content[0].text)
+        self.assertNotIn("inspect", self.native.calls)
+
+    def test_a_runtime_error_reaches_the_caller_with_its_text(self):
+        async def call():
+            async with Client(mcp) as session:
+                return await session.call_tool("inspect", {})
+
+        with (patch("cavi_character_animator_mcp.server.client", return_value=self.client),
+              patch.object(self.client, "inspect", side_effect=RuntimeError("native helper timed out"))):
+            result = asyncio.run(call())
+
+        self.assertTrue(result.is_error)
+        self.assertIn("native helper timed out", result.content[0].text)
+
     def test_capture_returns_the_window_image_beside_its_receipt(self):
         async def capture():
             async with Client(mcp) as session:

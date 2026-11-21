@@ -10,9 +10,8 @@ from cavi_mcp_core.media import png_content
 from cavi_mcp_core.server import DESTRUCTIVE as MUTATE
 from cavi_mcp_core.server import READ_ONLY as READ
 from cavi_mcp_core.server import WRITES as WRITE
-from cavi_mcp_core.server import Server
+from cavi_mcp_core.server import Server, need, reject_foreign
 from mcp.server.mcpserver import AcceptedElicitation, Context, Elicit, ElicitationResult, Resolve
-from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 
@@ -20,6 +19,13 @@ from . import media
 from .animator import CharacterAnimator
 from .bridge import CharacterRejected, CharacterUnknown, NativeBridge
 from .config import data_dir, workspace
+
+# Arguments each action uses, and the ones it requires; any other argument is refused.
+SESSION_USES = {"inspect": set(), "claim": {"owner", "expected_project", "ttl_seconds", "prepared_copy_id"},
+                "renew": {"lease_id", "ttl_seconds"}, "release": {"lease_id"},
+                "resume": {"lease_id", "owner", "expected_project", "pending_operation_id", "ttl_seconds"}}
+SESSION_NEEDS = {"inspect": (), "claim": ("owner", "expected_project"), "renew": ("lease_id",),
+                 "release": ("lease_id",), "resume": ("lease_id", "owner", "expected_project", "pending_operation_id")}
 
 
 class CharacterAnimatorServer(Server):
@@ -29,7 +35,7 @@ class CharacterAnimatorServer(Server):
 
 
 mcp = CharacterAnimatorServer("cavi-character-animator-mcp", package="cavi-character-animator-mcp",
-                              anticipated=(), instructions=(
+                              instructions=(
     "Controls the installed macOS Character Animator through a bounded native adapter. "
     "Start with character_status and inspect. Claim session_control using the observed project_id. "
     "Save a new owned project copy before scene mutations. Native menus, visual observations and "
@@ -216,8 +222,6 @@ async def execute(function):
     cancelled = threading.Event()
     try:
         return await anyio.to_thread.run_sync(lambda: function(cancelled), abandon_on_cancel=True)
-    except (CharacterRejected, CharacterUnknown, OSError, ValueError) as exc:
-        raise ToolError(str(exc)) from exc
     except BaseException:
         cancelled.set()
         raise
@@ -272,18 +276,25 @@ async def capture(directory: str) -> Annotated[CallToolResult, CharacterCapture]
 async def session_control(action: Literal["inspect", "claim", "renew", "release", "resume"],
                           owner: str | None = None, expected_project: str | None = None,
                           lease_id: str | None = None,
-                          ttl_seconds: Annotated[StrictInt, Field(ge=30, le=3600)] = 600,
+                          ttl_seconds: Annotated[StrictInt, Field(ge=30, le=3600)] | None = None,
                           pending_operation_id: str | None = None,
                           prepared_copy_id: str | None = None) -> CharacterOwnership:
     """Claim, renew, release, or resume a matching expired lease for one unknown operation.
 
     Resume requires the expired lease ID, same owner, project ID and exact unknown operation ID. It renews
     ownership after process/root checks and dispatches no native command or chooser action. Claiming a
-    prepared copy requires its private ID and a fresh observation of that exact native root.
+    prepared copy requires its private ID and a fresh observation of that exact native root. ttl_seconds
+    defaults to 600. An argument the action does not use is refused.
     """
+    given = {"owner": owner, "expected_project": expected_project, "lease_id": lease_id,
+             "ttl_seconds": ttl_seconds, "pending_operation_id": pending_operation_id,
+             "prepared_copy_id": prepared_copy_id}
+    reject_foreign(action, given, SESSION_USES[action])
+    for name in SESSION_NEEDS[action]:
+        need(given[name], name, action)
     return await execute(lambda cancelled: client().session(action, owner, expected_project,
-                                                           lease_id, ttl_seconds, cancelled,
-                                                           pending_operation_id, prepared_copy_id))
+                                                           lease_id, 600 if ttl_seconds is None else ttl_seconds,
+                                                           cancelled, pending_operation_id, prepared_copy_id))
 
 
 @mcp.tool(annotations=WRITE)
@@ -324,7 +335,6 @@ async def import_media(source: str, kind: Literal["puppet_psd", "audio_wav"],
 
     PSDs use the native Import chooser. WAVs are handed to the already-running app. It waits for the app to
     finish; completion is observed with project_item when a new puppet or audio row appears in the Project panel.
-    The first WAV after a project opens is unverified: its row is drawn only once the Project panel is clicked.
     """
     return await execute(lambda cancelled: client().import_media(source, kind, lease_id, cancelled))
 
@@ -393,8 +403,12 @@ async def operation_control(action: Literal["inspect", "verify_copy", "continue_
     no matching app instance is running, and the original destination remains absent; it verifies no copy.
     abandon_after_exit archives an unknown operation on a first-hand owned project only after two stable
     observations confirm the original app process and all Character Animator instances have exited. It
-    preserves project files and records the native outcome as unknown.
+    preserves project files and records the native outcome as unknown. An argument the action does not use
+    is refused.
     """
+    reject_foreign(action, {"lease_id": lease_id, "user_confirmed_cancelled": user_confirmed_cancelled or None},
+                   set() if action == "inspect" else {"lease_id", "user_confirmed_cancelled"}
+                   if action == "confirm_cancelled_import" else {"lease_id"})
     confirmation = "caller_reported"
     if not isinstance(answer, AcceptedElicitation):
         user_confirmed_cancelled, confirmation = False, "elicited"
