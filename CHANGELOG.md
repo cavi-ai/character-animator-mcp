@@ -21,6 +21,9 @@ Versions come from git tags; a pull request adds its lines under Unreleased and 
 - `operation_control` adds `reconcile_import`, which resolves an unknown import from its new Project row without
   quitting Character Animator.
 - An unknown outcome's `next_action` is `inspect`.
+- `session_control` and `operation_control` refuse an argument their action does not use.
+- A tool that fails on a runtime or OS error returns that error's message.
+- A `PROJECT_ITEM_AMBIGUOUS` message lists the Project panel rows it read.
 - The native helper launches through `cavi_mcp_core.owned_exec`, so it registers with the process owner that
   `CAVI_MCP_PROCESS_OWNER` names.
 
@@ -35,6 +38,8 @@ Versions come from git tags; a pull request adds its lines under Unreleased and 
 - Chooser observation walks the focused window first and only the last three columns of the Import column browser,
   so a deep folder chain no longer truncates the tree before the selected file.
 - A native chooser step waits for three observations before deciding a slow observation was stable.
+- `project_select` reads the Project panel at full resolution from the main window, so short names such as `Pip`
+  and rows behind a type icon are found.
 
 ## 0.1.0 - 2026-11-19
 

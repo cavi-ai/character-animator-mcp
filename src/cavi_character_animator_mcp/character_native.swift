@@ -834,12 +834,24 @@ final class Observation {
         guard CGImageDestinationFinalize(encoder) else { try fail("CAPTURE_FAILED", "PNG encoding failed") }
         let data = mutable as Data
         guard data.count <= 32 * 1024 * 1024 else { try fail("CAPTURE_LIMIT", "Window capture exceeds 32 MiB") }
+        // An ocr_region [x, y, width, height] (Vision coordinates, origin bottom left) is read from a crop, so its
+        // small panel text is not downsampled with the whole window; its bounds are mapped back to the window.
+        var region = CGRect(x: 0, y: 0, width: 1, height: 1), source = image
+        if let r = parameters["ocr_region"] as? [Double], r.count == 4 {
+            region = CGRect(x: r[0], y: r[1], width: r[2], height: r[3]).intersection(region)
+            let pixels = CGRect(x: region.minX * Double(image.width), y: (1 - region.maxY) * Double(image.height),
+                                width: region.width * Double(image.width), height: region.height * Double(image.height)).integral
+            guard !region.isEmpty, let crop = image.cropping(to: pixels) else { try fail("CAPTURE_FAILED", "OCR region is outside the window") }
+            source = crop
+        }
         let recognition = VNRecognizeTextRequest(); recognition.recognitionLevel = .accurate; recognition.usesLanguageCorrection = false
-        try VNImageRequestHandler(cgImage: image, options: [:]).perform([recognition])
+        try VNImageRequestHandler(cgImage: source, options: [:]).perform([recognition])
         let tokens: [[String: Any]] = (recognition.results ?? []).prefix(512).compactMap { item in
             guard let candidate = item.topCandidates(1).first else { return nil }
+            let box = item.boundingBox
             return ["text": String(candidate.string.prefix(512)), "confidence": Double(candidate.confidence),
-                "bounds": [item.boundingBox.minX, item.boundingBox.minY, item.boundingBox.width, item.boundingBox.height].map(Double.init)]
+                "bounds": [region.minX + box.minX * region.width, region.minY + box.minY * region.height,
+                           box.width * region.width, box.height * region.height].map(Double.init)]
         }
         var result: [String: Any] = ["window_id": window.windowID, "window_title": window.title ?? "",
             "frame": [window.frame.minX, window.frame.minY, window.frame.width, window.frame.height].map(Double.init),
@@ -1836,18 +1848,23 @@ final class Observation {
               current.focusedWindow.map({ bool($0, "AXModal") == true }) != true else {
             try fail("STALE_STATE", "Character Animator project, process or modal state changed before project selection")
         }
-        let captureResult = try await capture(current, parameters: [:])
+        // The same main-window capture project_items reads, so a row inspect lists is a row this can select.
+        let captureResult = try await capture(current, parameters: ["main_window": true, "ocr_region": projectPanelRegion])
         guard let ocr = captureResult["ocr"] as? [[String: Any]],
               let windowID = captureResult["window_id"] as? UInt32,
               let frame = captureResult["frame"] as? [Double], frame.count == 4 else {
             try fail("CAPTURE_FAILED", "Project panel OCR or exact native window evidence is unavailable")
         }
-        let matches = projectRows(ocr).filter { row in
+        let rows = projectRows(ocr)
+        let matches = rows.filter { row in
             (row["name"] as? String)?.caseInsensitiveCompare(name) == .orderedSame && row["type"] as? String == itemType
         }
         guard matches.count == 1, let match = matches.first,
               let nameBox = match["name_bounds"] as? [Double], let typeBox = match["type_bounds"] as? [Double] else {
-            try fail("PROJECT_ITEM_AMBIGUOUS", "Expected one visible Project-panel name and matching Puppet/Audio/Scene type row")
+            let visible = rows.prefix(16).map { "\($0["name"] ?? "") (\($0["type"] ?? ""))" }.joined(separator: ", ")
+            try fail("PROJECT_ITEM_AMBIGUOUS", "Expected one visible Project-panel row named \(name) of type \(itemType); "
+                     + "\(matches.count) matched; visible rows: \(visible.isEmpty ? "none" : visible); "
+                     + "window \(windowID) \(frame.map { Int($0) }) read \(ocr.count) text lines")
         }
         let point = CGPoint(x: frame[0] + (nameBox[0] + nameBox[2] / 2) * frame[2],
                             y: frame[1] + (1 - (nameBox[1] + nameBox[3] / 2)) * frame[3])
@@ -1906,6 +1923,7 @@ final class Observation {
     // Puppet, Audio or Scene type token on the same line. A name line starts with the row's type icon,
     // read as one glyph and a space ("¿ Pip", "# dialogue.wav", "2 Scene 1"), which can lower the line's
     // confidence to 0.5. Bounds are Vision's, origin bottom left.
+    let projectPanelRegion = [0.0, 0.6, 0.4, 0.4]
     func projectRows(_ ocr: [[String: Any]]) -> [[String: Any]] {
         let tokens: [(text: String, box: [Double], confidence: Double)] = ocr.compactMap { token in
             guard let text = token["text"] as? String, let box = token["bounds"] as? [Double], box.count == 4
@@ -1960,7 +1978,7 @@ final class Observation {
         }
         if operation == "project_items" {
             guard observation.state["authentication_or_permission_prompt"] as? Bool != true else { try fail("AUTHENTICATION_BOUNDARY", "Application prompt requires manual handling") }
-            let captured = try await capture(observation, parameters: ["main_window": true])
+            let captured = try await capture(observation, parameters: ["main_window": true, "ocr_region": projectPanelRegion])
             let rows = projectRows(captured["ocr"] as? [[String: Any]] ?? []).map { row in
                 ["name": row["name"] ?? "", "type": row["type"] ?? ""]
             }

@@ -24,8 +24,6 @@ copy and the source again, and imports the copy. The result lists the `source` a
   is open and File > Import is enabled again. `completion` `observed` comes with `project_item`, the new puppet or
   audio row, one named after the source file first. With `unverified`, the new row was not visible: scroll the
   Project panel and call `inspect`. Reading rows needs Screen Recording access.
-- The first WAV imported after a project opens stays off the Project panel until the panel is clicked, so that
-  import returns `unverified`; `inspect` lists its row after the next `project_select`.
 
 If an Import chooser or its Go To sheet is already open for this project, the call adopts it instead of opening
 the menu again. Any other modal blocks the import.
@@ -42,7 +40,9 @@ visual evidence, not a scene ID.
 for the application to finish. `add_to_new_scene` is `completion` `observed` with the new scene row in
 `project_item`. `inspect` reports `timeline_selection` `true` while timeline tracks or take bars are selected;
 `set_work_area_to_selection` then spans the work area from the earliest to the latest selected time. While the
-work area is enabled, `scene_export` exports only that range. Both tools take an
+work area is enabled, `scene_export` exports only that range. A selected puppet track spans the whole scene, so
+after `add_to_new_scene` and `create_take_from_scene_audio` the work area and the export cover the whole scene,
+not only the dialogue. Both tools take an
 `expected_fingerprint` copied from the latest `inspect` (`native.state.fingerprint`). The result's
 `expected_state_fingerprint` repeats it, and `native_after` (`scene_action`) or `native` (`project_select`) is the
 state observed after the dispatch.

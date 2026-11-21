@@ -11,14 +11,16 @@ camera or microphone or signs into an account.
 ## What it does
 
 - Reads the application: `character_status` reports whether the application is running and reachable, and
-  `inspect` returns the process, the open project root, the native controls and any unresolved operation.
-  `capture` saves a PNG of the Character Animator window with recognized text.
+  `inspect` returns the process, the open project root, the native controls, the visible Project panel rows and
+  any unresolved operation. `capture` saves a PNG of the Character Animator window with recognized text and returns
+  the image.
 - Takes ownership of a project: `project_prepare_copy` copies a closed `.chproj` tree into the workspace and
   verifies its file hashes, `project_open_prepared_copy` opens that copy, and `session_control` claims, renews,
   releases or resumes a lease on the open project. `project_save_copy` saves the owned project as a new copy.
 - Changes the owned project: `import_media` submits a puppet PSD or a dialogue WAV, `project_select` selects a
   puppet, audio or scene row by name, and `scene_action` runs one fixed menu action on the selection.
-- Exports: `scene_export` submits a PNG Sequence and WAV export of the owned scene into a new workspace directory.
+- Exports: `scene_export` submits a PNG Sequence and WAV export of the owned scene into a new workspace directory
+  and waits for the frames, WAV and sidecars.
 - Recovers: `operation_control` inspects, verifies or continues a recorded native operation, and reconciles or
   archives one whose outcome is unknown.
 - Checks the files: `export_inspect` validates exported PNG and WAV files against an explicit recipe, and

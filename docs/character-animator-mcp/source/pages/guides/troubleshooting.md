@@ -82,7 +82,8 @@ running.
 ## `PROJECT_ITEM_AMBIGUOUS`
 
 The helper expects exactly one visible Project-panel row with that `name` and `item_type`, found by recognized
-text. Make the row visible in the Project panel, or give the item a name no other row shares.
+text. The message lists the rows it read. Make the row visible in the Project panel, or give the item a name no
+other row shares.
 
 ## An import or export shows `completion` `unverified`
 

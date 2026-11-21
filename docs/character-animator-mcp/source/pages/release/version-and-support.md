@@ -12,10 +12,13 @@ repository [CHANGELOG.md](https://github.com/cavi-ai/character-animator-mcp/blob
 The unit tests use a scripted native bridge and synthetic export files, and the protocol and simulated evaluations
 never start Character Animator, so none of them establishes the application's own behavior. The helper's menu and
 chooser handling is tried in Character Animator when `character_native.swift` changes; the `native-background`
-evaluation reads `character_status` and `inspect` from a running application. No Character Animator version is
-recorded as checked: every result reports what the application showed, and every dispatched command is reported as
-unverified until you check it. A tool that fails in your install is a bug
-to report at
+evaluation reads `character_status` and `inspect` from a running application.
+
+Character Animator 26.0.0 on macOS 26.6 was checked end to end: a prepared copy opened, a puppet PSD and a
+dialogue WAV imported, both rows selected, added to a new scene, a take created from the scene audio, the work area
+set to the selection and the scene exported as a PNG Sequence and WAV. A result reports `completion` `observed`
+only when the window or the export directory showed the change; anything else is `unverified` until you check it.
+A tool that fails in your install is a bug to report at
 [the issue tracker](https://github.com/cavi-ai/character-animator-mcp/issues).
 
 Requires Python 3.15 or newer. Only macOS is supported, because the server controls the application through the
