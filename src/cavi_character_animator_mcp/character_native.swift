@@ -872,12 +872,26 @@ final class Observation {
         var windows = candidate.map { [$0] } ?? (attribute(root, "AXWindows") as? [AXUIElement] ?? [])
         if candidate == nil, let focused = axElement(attribute(root, "AXFocusedWindow")),
            !windows.contains(where: { CFEqual($0, focused) }) { windows.append(focused) }
+        if candidate == nil {
+            var focusedElement = axElement(attribute(root, "AXFocusedUIElement"))
+            for _ in 0..<16 {
+                guard let el = focusedElement else { break }
+                var elPID: pid_t = 0
+                guard AXUIElementGetPid(el, &elPID) == .success, elPID == pid else { break }
+                if ["AXSheet", "AXWindow"].contains(text(el, "AXRole") ?? ""),
+                   !windows.contains(where: { CFEqual($0, el) }) {
+                    windows.append(el)
+                    break
+                }
+                focusedElement = axElement(attribute(el, "AXParent"))
+            }
+        }
         let visible = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                                  kCGNullWindowID) as? [[String: Any]] ?? []
         return windows.contains { window in
             var windowPID: pid_t = 0
             guard AXUIElementGetPid(window, &windowPID) == .success, windowPID == pid,
-                  let f = frame(window) else { return false }
+                  let f = frame(window), f[2] > 0, f[3] > 0 else { return false }
             let matches = visible.filter { item in
                 guard item[kCGWindowOwnerPID as String] as? Int == Int(pid),
                       (item[kCGWindowAlpha as String] as? Double ?? 1) > 0,
@@ -887,7 +901,7 @@ final class Observation {
                 return abs(rect.minX - f[0]) <= 2 && abs(rect.minY - f[1]) <= 2
                     && abs(rect.width - f[2]) <= 2 && abs(rect.height - f[3]) <= 2
             }
-            return matches.count == 1
+            return !matches.isEmpty
         }
     }
     func missionControlSelectWindow(_ app: NSRunningApplication, roots: [String]) async throws {
@@ -915,9 +929,11 @@ final class Observation {
         guard !hasMatchingOnScreenWindow(targetRoot, pid: app.processIdentifier) else {
             try fail("FOCUS_CHANGED", "The owned window is visible but not frontmost")
         }
-        let missionURL = URL(fileURLWithPath: "/System/Applications/Mission Control.app")
+        let expectedMissionPath = "/System/Applications/Mission Control.app"
+        let missionURL = URL(fileURLWithPath: expectedMissionPath)
             .standardizedFileURL.resolvingSymlinksInPath()
-        guard Bundle(url: missionURL)?.bundleIdentifier == "com.apple.exposelauncher" else {
+        guard missionURL.path == expectedMissionPath,
+              Bundle(url: missionURL)?.bundleIdentifier == "com.apple.exposelauncher" else {
             try fail("FOCUS_UNAVAILABLE", "The installed Mission Control application is unavailable")
         }
         let configuration = NSWorkspace.OpenConfiguration()
@@ -926,9 +942,18 @@ final class Observation {
         configuration.createsNewApplicationInstance = false
         configuration.allowsRunningApplicationSubstitution = false
         let mission = try await NSWorkspace.shared.openApplication(at: missionURL, configuration: configuration)
-        guard mission.bundleIdentifier == "com.apple.exposelauncher",
-              mission.bundleURL?.standardizedFileURL.resolvingSymlinksInPath() == missionURL,
-              mission.processIdentifier > 0 else {
+        let runningMissionMatches = !mission.isTerminated
+            && mission.bundleIdentifier == "com.apple.exposelauncher"
+            && mission.bundleURL?.standardizedFileURL.resolvingSymlinksInPath() == missionURL
+            && mission.processIdentifier > 0
+        // Mission Control.app is a one-shot launcher (_CoreDockSendNotification + exit);
+        // on macOS 26 it can exit before openApplication returns, leaving isTerminated=true
+        // with pid=-1 and nil bundle metadata while Dock exposes mc.windows.
+        let transientMissionExited = mission.isTerminated
+            && (mission.bundleIdentifier == nil || mission.bundleIdentifier == "com.apple.exposelauncher")
+            && (mission.bundleURL == nil
+                || mission.bundleURL?.standardizedFileURL.resolvingSymlinksInPath() == missionURL)
+        guard runningMissionMatches || transientMissionExited else {
             try fail("FOCUS_UNAVAILABLE", "Mission Control did not open from its exact system application")
         }
         try await Task.sleep(nanoseconds: 500_000_000)
@@ -947,6 +972,7 @@ final class Observation {
             try fail("FOCUS_CHANGED", "Character Animator identity or prompt state changed while Mission Control opened")
         }
         let docks = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock")
+            .filter { $0.bundleURL?.standardizedFileURL.resolvingSymlinksInPath().path == "/System/Library/CoreServices/Dock.app" }
         guard docks.count == 1 else { try fail("FOCUS_UNAVAILABLE", "The Dock process is unavailable or ambiguous") }
         let dockRoot = AXUIElementCreateApplication(docks[0].processIdentifier)
         let dockNodes = descendants(dockRoot)

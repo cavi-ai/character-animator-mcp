@@ -141,5 +141,43 @@ class ShippedHelperTests(unittest.TestCase):
                 self.assertIsInstance(json.loads(result.stdout or "{}"), dict)
 
 
+class FocusContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (PACKAGE / "character_native.swift").read_text(encoding="utf-8")
+
+    def _slice(self, start: str, end: str) -> str:
+        begin = self.source.index(start)
+        finish = self.source.index(end, begin)
+        return self.source[begin:finish]
+
+    def test_onscreen_window_match_allows_multiple_same_pid_layers_and_modal_sheets(self):
+        body = self._slice(
+            "func hasMatchingOnScreenWindow(",
+            "func missionControlSelectWindow(",
+        )
+        self.assertIn("AXUIElementGetPid(window, &windowPID) == .success, windowPID == pid", body)
+        self.assertIn("kCGWindowOwnerPID as String", body)
+        self.assertIn("kCGWindowIsOnscreen as String", body)
+        self.assertIn("AXFocusedUIElement", body)
+        self.assertIn('["AXSheet", "AXWindow"]', body)
+        self.assertIn("return !matches.isEmpty", body)
+        self.assertNotIn("matches.count == 1", body)
+
+    def test_mission_control_verification_handles_transient_system_launcher_exit(self):
+        body = self._slice(
+            "func missionControlSelectWindow(",
+            "/// Brings the recorded application back to the front",
+        )
+        self.assertIn('let expectedMissionPath = "/System/Applications/Mission Control.app"', body)
+        self.assertIn("missionURL.path == expectedMissionPath", body)
+        self.assertIn('Bundle(url: missionURL)?.bundleIdentifier == "com.apple.exposelauncher"', body)
+        self.assertIn("let runningMissionMatches = !mission.isTerminated", body)
+        self.assertIn("let transientMissionExited = mission.isTerminated", body)
+        self.assertIn("guard runningMissionMatches || transientMissionExited else", body)
+        self.assertIn('"/System/Library/CoreServices/Dock.app"', body)
+        self.assertIn('text($0, "AXIdentifier") == "mc.windows"', body)
+
+
 if __name__ == "__main__":
     unittest.main()
