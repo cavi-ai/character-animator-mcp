@@ -86,5 +86,7 @@ text. Make the row visible in the Project panel, or give the item a name no othe
 
 ## An import or export shows `completion` `unverified`
 
-That is the normal result: the chooser was submitted. Verify in the application and, for an export, with
-`export_inspect`. A WAV handoff receipt in particular does not confirm the import; check the project's Audio rows.
+The server waited and did not see the result. For an import, no new puppet or audio row became visible in the
+Project panel: scroll the panel so the row shows and call `inspect`. Without Screen Recording access the rows
+cannot be read. For an export, the frames, WAV and sidecars did not all appear and settle within 300 seconds:
+check the directory with `export_inspect`.

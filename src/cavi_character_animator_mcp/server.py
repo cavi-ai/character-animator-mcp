@@ -51,6 +51,9 @@ class CharacterInspection(Result):
     project_id: str
     native: dict[str, Any]
     pending_operation: dict[str, Any] | None
+    project_items: list[dict[str, str]] | None = None
+    project_items_error: str | None = None
+    timeline_selection: bool | None = None
     launches_application: Literal[False]
 
 
@@ -109,10 +112,11 @@ class CharacterProject(Result):
 class CharacterImportedMedia(Result):
     operation_id: str
     status: Literal["native_import_submitted"]
-    completion: Literal["unverified"]
+    completion: Literal["observed", "unverified"]
     kind: Literal["puppet_psd", "audio_wav"]
     source: dict[str, Any]
     import_copy: dict[str, Any]
+    project_item: dict[str, str] | None = None
     native: dict[str, Any]
     source_identity: Literal["hashed_private_import_copy"]
     retry_safe: Literal[False]
@@ -121,9 +125,11 @@ class CharacterImportedMedia(Result):
 class CharacterSceneAction(Result):
     operation_id: str
     status: Literal["native_scene_action_submitted"]
-    action: Literal["add_to_new_scene", "create_take_from_scene_audio", "compute_lip_sync", "export_png_wav"]
-    completion: Literal["unverified"]
+    action: Literal["add_to_new_scene", "create_take_from_scene_audio", "compute_lip_sync",
+                    "set_work_area_to_selection", "export_png_wav"]
+    completion: Literal["observed", "unverified"]
     expected_state_fingerprint: str
+    project_item: dict[str, str] | None = None
     native_dispatch: dict[str, Any]
     native_after: dict[str, Any]
     selection_identity: Literal["caller_observed_state_fingerprint"]
@@ -236,8 +242,13 @@ async def character_status() -> CharacterStatus:
 
 @mcp.tool(annotations=READ)
 async def inspect() -> CharacterInspection:
-    """Observe actual process, project-root evidence, native controls and unresolved operation state."""
-    return await execute(lambda cancelled: client().inspect(cancelled))
+    """Observe actual process, project-root evidence, native controls and unresolved operation state.
+
+    project_items lists the visible Project panel rows (name; puppet, audio or scene) read from the window;
+    it needs Screen Recording access, and project_items_error says why it is missing. timeline_selection
+    is whether Timeline > Set Work Area to Selection is enabled, which needs selected timeline tracks.
+    """
+    return await execute(lambda cancelled: client().inspect(cancelled, items=True))
 
 
 @mcp.tool(annotations=WRITE)
@@ -309,22 +320,23 @@ async def project_save_copy(directory: str, name: str, lease_id: str) -> Charact
 @mcp.tool(annotations=MUTATE)
 async def import_media(source: str, kind: Literal["puppet_psd", "audio_wav"],
                        lease_id: str) -> CharacterImportedMedia:
-    """Submit a hash-pinned workspace PSD puppet or WAV to the owned project.
+    """Import a hash-pinned workspace PSD puppet or WAV into the owned project.
 
-    PSDs use the native Import chooser. WAVs are handed to the already-running app;
-    verify the project's Audio row because a handoff receipt does not confirm import.
+    PSDs use the native Import chooser. WAVs are handed to the already-running app. It waits for the app to
+    finish; completion is observed with project_item when a new puppet or audio row appears in the Project panel.
     """
     return await execute(lambda cancelled: client().import_media(source, kind, lease_id, cancelled))
 
 
 @mcp.tool(annotations=MUTATE)
 async def scene_action(action: Literal["add_to_new_scene", "create_take_from_scene_audio",
-                                      "compute_lip_sync", "export_png_wav"],
+                                      "compute_lip_sync", "set_work_area_to_selection", "export_png_wav"],
                        expected_fingerprint: str, lease_id: str) -> CharacterSceneAction:
-    """Dispatch one fixed menu action against the current owned-project selection.
+    """Run one fixed menu action on the current owned-project selection and wait for the app to finish.
 
-    Actions are add_to_new_scene, create_take_from_scene_audio, compute_lip_sync or export_png_wav.
-    Copy the fingerprint from the latest inspect; scene/export completion remains unverified until inspected.
+    add_to_new_scene is observed with project_item when a new scene row appears. set_work_area_to_selection
+    spans the work area over the selected timeline tracks or take bars; while the work area is enabled,
+    scene_export exports only that range. Copy the fingerprint from the latest inspect.
     """
     return await execute(lambda cancelled: client().scene_action(action, expected_fingerprint,
                                                                    lease_id, cancelled))
@@ -333,9 +345,10 @@ async def scene_action(action: Literal["add_to_new_scene", "create_take_from_sce
 @mcp.tool(annotations=MUTATE)
 async def scene_export(directory: str, name: str, expected_fingerprint: str,
                        lease_id: str) -> CharacterOperation:
-    """Submit PNG Sequence and WAV for the current owned scene into a new workspace directory.
+    """Export PNG Sequence and WAV for the current owned scene into a new workspace directory.
 
-    The result confirms native chooser submission only. Inspect actual files with export_inspect after export.
+    It waits for the frames, WAV and sidecars; completion is observed with frame_count, frames, wav, json
+    and xml once they exist and stop changing. Validate them with export_inspect.
     """
     return await execute(lambda cancelled: client().scene_export(
         directory, name, expected_fingerprint, lease_id, cancelled))
@@ -355,7 +368,7 @@ async def project_select(name: str, item_type: Literal["puppet", "audio", "scene
 
 @mcp.tool(annotations=WRITE)
 async def operation_control(action: Literal["inspect", "verify_copy", "continue_copy", "continue_import", "continue_export",
-                                            "confirm_cancelled_import", "cancel_unsubmitted",
+                                            "confirm_cancelled_import", "reconcile_import", "cancel_unsubmitted",
                                             "reconcile_unsubmitted_copy", "reconcile_copy_after_exit",
                                             "abandon_after_exit"],
                             operation_id: str,
@@ -370,6 +383,8 @@ async def operation_control(action: Literal["inspect", "verify_copy", "continue_
     recorded pre-menu focus rejection. confirm_cancelled_import asks the user when the client supports
     elicitation; otherwise it requires user_confirmed_cancelled from the user's own report. It also needs
     matching process/root/source evidence; it issues no native command and is not native-verified cancellation.
+    reconcile_import resolves an unknown import, with no chooser or modal open, when the Project panel shows a
+    puppet or audio row that was not there before it; it issues no native command and leaves the app running.
     cancel_unsubmitted applies only to an observed unsubmitted Save As chooser.
     reconcile_unsubmitted_copy records only a closed, pre-submit initial Save As stage after stable source checks;
     it sends no native command and does not imply user cancellation.

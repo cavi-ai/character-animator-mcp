@@ -61,6 +61,12 @@ class NativeFixture:
         self.export_inspect_states = []
         self.import_inspect_states = []
         self.open_without_root = False
+        # Visible Project panel rows; None means screen capture is unavailable.
+        self.project_rows = None
+        self.rows_after_import = None
+        self.rows_after_scene = None
+        self.import_busy_inspections = 0
+        self.export_frames = 0
 
     def call(self, operation, parameters=None, expected=None, cancelled=None):
         self.calls.append(operation)
@@ -68,10 +74,27 @@ class NativeFixture:
             self.last_import_parameters = copy.deepcopy(parameters or {})
         if expected is not None and expected["fingerprint"] != self.state["fingerprint"]:
             raise CharacterRejected("Stale observation", "STALE_STATE")
+        if operation == "project_items":
+            if self.project_rows is None:
+                raise CharacterRejected("Fixture screen capture unavailable", "SCREEN_PERMISSION_UNAVAILABLE")
+            return {"version": 1, "ok": True, "operation": operation,
+                    "state": copy.deepcopy(self.state),
+                    "result": {"status": "observed", "project_items": copy.deepcopy(self.project_rows)}}
+        if (operation == "inspect" and self.import_busy_inspections
+                and (self.state.get("menu_commands") or {}).get("import", {}).get("enabled") is False):
+            self.import_busy_inspections -= 1
+            self.state["menu_commands"] = {"import": {"available": True,
+                                                      "enabled": not self.import_busy_inspections}}
+            if not self.import_busy_inspections and self.rows_after_import is not None:
+                self.project_rows = self.rows_after_import
+        if operation == "add_to_new_scene" and self.rows_after_scene is not None:
+            self.project_rows = self.rows_after_scene
         if operation == "open_audio_wav":
             self.last_audio_wav_parameters = copy.deepcopy(parameters or {})
             if self.fail_audio_wav_handoff:
                 raise CharacterUnknown("Fixture WAV handoff outcome unknown")
+            if self.rows_after_import is not None:
+                self.project_rows = self.rows_after_import
             return {"version": 1, "ok": True, "operation": operation,
                     "state": copy.deepcopy(self.state),
                     "result": {"status": "native_audio_wav_handoff_requested", "completion": "unverified"}}
@@ -217,6 +240,18 @@ class NativeFixture:
                 return {"version": 1, "ok": True, "operation": operation,
                         "state": copy.deepcopy(self.state),
                         "result": {"status": "native_directory_requested", "completion": "unverified"}}
+            if kind == "import" and self.import_busy_inspections:
+                self.state["menu_commands"] = {"import": {"available": True, "enabled": False}}
+            elif kind == "import" and self.rows_after_import is not None:
+                self.project_rows = self.rows_after_import
+            if kind == "export_png_wav" and self.export_frames:
+                target, name = Path(parameters["directory"]), parameters["basename"]
+                (target / name).mkdir()
+                for number in range(self.export_frames):
+                    (target / name / f"{name}.{number:03}.png").write_bytes(b"frame")
+                (target / name / f"{name}.wav").write_bytes(b"wav")
+                (target / name / f"{name}.json").write_text("{}")
+                (target / f"{name}.xml").write_text("<xml/>")
             self.state.update(frontmost=True, fingerprint="import-submitted",
                               focused_window={"identifier": "main-window", "role": "AXLayoutArea",
                                               "title": "Adobe Character Animator 2026"},
@@ -302,6 +337,8 @@ class CharacterOwnershipTests(unittest.TestCase):
         (self.root / "original").mkdir()
         self.native = NativeFixture(self.root)
         self.client = CharacterAnimator(self.root / "workspace", self.root / "private", self.native)
+        # Fixture exports write no files unless asked; do not wait minutes for them.
+        self.client.export_seconds = .2
 
     def claim(self):
         observed = self.client.inspect()
@@ -1304,6 +1341,125 @@ class CharacterOwnershipTests(unittest.TestCase):
         with self.assertRaisesRegex(CharacterRejected, "state changed"):
             self.client.project_select("Voice", "audio", True, "c" * 64, lease["lease_id"])
         self.assertEqual(self.native.calls.count("project_select"), before)
+
+    def test_inspect_lists_visible_project_rows_and_timeline_selection(self):
+        self.native.project_rows = [{"name": "Pip", "type": "puppet", "name_bounds": [0.02, 0.9, 0.05, 0.01]},
+                                    {"name": "dialogue", "type": "audio"}]
+        self.native.state["menu_commands"] = {"set_work_area_to_selection": {"available": True, "enabled": True}}
+
+        observed = self.client.inspect(items=True)
+
+        self.assertEqual(observed["project_items"], [{"name": "Pip", "type": "puppet"},
+                                                     {"name": "dialogue", "type": "audio"}])
+        self.assertIsNone(observed["project_items_error"])
+        self.assertIs(observed["timeline_selection"], True)
+
+    def test_inspect_reports_why_project_rows_are_unavailable(self):
+        observed = self.client.inspect(items=True)
+
+        self.assertIsNone(observed["project_items"])
+        self.assertIn("screen capture unavailable", observed["project_items_error"])
+        self.assertIsNone(observed["timeline_selection"])
+
+    def test_import_media_waits_for_the_app_and_observes_the_new_project_row(self):
+        self.native.hide_chooser_after_command = True
+        lease = self.claim()
+        self.client.save_copy("copies", "Owned", lease["lease_id"])
+        (self.root / "workspace/Pip.psd").write_bytes(b"fixture PSD bytes")
+        self.native.project_rows = [{"name": "dialogue", "type": "audio"}]
+        self.native.rows_after_import = [{"name": "dialogue", "type": "audio"}, {"name": "Pip", "type": "puppet"}]
+        self.native.import_busy_inspections = 2
+
+        result = self.client.import_media("Pip.psd", "puppet_psd", lease["lease_id"])
+
+        self.assertEqual(result["completion"], "observed")
+        self.assertEqual(result["project_item"], {"name": "Pip", "type": "puppet"})
+        self.assertEqual(self.native.import_busy_inspections, 0)
+        archived = self.client.read("operations/" + result["operation_id"] + ".json")
+        self.assertEqual(archived["project_items_before"], [{"name": "dialogue", "type": "audio"}])
+        self.assertIsNone(self.client.inspect()["pending_operation"])
+
+    def test_audio_wav_import_observes_the_new_audio_row(self):
+        lease = self.claim()
+        self.client.save_copy("copies", "Owned", lease["lease_id"])
+        self.native.state.update(running=True, process_count=1)
+        (self.root / "workspace/dialogue.wav").write_bytes(b"fixture WAV bytes")
+        self.native.project_rows = [{"name": "Pip", "type": "puppet"}]
+        self.native.rows_after_import = [{"name": "Pip", "type": "puppet"}, {"name": "dialogue", "type": "audio"}]
+
+        result = self.client.import_media("dialogue.wav", "audio_wav", lease["lease_id"])
+
+        self.assertEqual(result["completion"], "observed")
+        self.assertEqual(result["project_item"], {"name": "dialogue", "type": "audio"})
+
+    def test_add_to_new_scene_observes_the_new_scene_row(self):
+        lease = self.claim()
+        self.client.save_copy("copies", "Owned", lease["lease_id"])
+        self.native.project_rows = [{"name": "Pip", "type": "puppet"}]
+        self.native.rows_after_scene = [{"name": "Pip", "type": "puppet"}, {"name": "Scene 1", "type": "scene"}]
+        self.native.state["fingerprint"] = "e" * 64
+
+        result = self.client.scene_action("add_to_new_scene", "e" * 64, lease["lease_id"])
+
+        self.assertEqual(result["completion"], "observed")
+        self.assertEqual(result["project_item"], {"name": "Scene 1", "type": "scene"})
+        self.assertIsNone(self.client.inspect()["pending_operation"])
+
+    def test_set_work_area_to_selection_is_a_timeline_scene_action(self):
+        lease = self.claim()
+        self.client.save_copy("copies", "Owned", lease["lease_id"])
+        self.native.state["fingerprint"] = "f" * 64
+
+        result = self.client.scene_action("set_work_area_to_selection", "f" * 64, lease["lease_id"])
+
+        self.assertEqual(result["action"], "set_work_area_to_selection")
+        self.assertEqual(result["completion"], "unverified")
+        self.assertEqual(self.native.calls.count("set_work_area_to_selection"), 1)
+        self.assertIsNone(self.client.inspect()["pending_operation"])
+
+    def test_scene_export_observes_frames_wav_and_sidecars(self):
+        self.native.hide_chooser_after_command = True
+        self.native.export_frames = 3
+        lease = self.claim()
+        self.client.save_copy("copies", "Owned", lease["lease_id"])
+        (self.root / "workspace/exports").mkdir()
+        self.native.state["fingerprint"] = "c" * 64
+
+        result = self.client.scene_export("exports/talk", "Pip", "c" * 64, lease["lease_id"])
+
+        output = self.client.path("exports/talk")
+        self.assertEqual(result["completion"], "observed")
+        self.assertEqual(result["frame_count"], 3)
+        self.assertEqual(result["frames"], {"first": str(output / "Pip/Pip.000.png"),
+                                            "last": str(output / "Pip/Pip.002.png")})
+        self.assertEqual(result["wav"], str(output / "Pip/Pip.wav"))
+        self.assertEqual(result["json"], str(output / "Pip/Pip.json"))
+        self.assertEqual(result["xml"], str(output / "Pip.xml"))
+        self.assertIsNone(self.client.inspect()["pending_operation"])
+
+    def test_reconcile_import_resolves_an_unknown_import_from_its_new_project_row(self):
+        lease = self.claim()
+        self.client.save_copy("copies", "Owned", lease["lease_id"])
+        (self.root / "workspace/Pip.psd").write_bytes(b"fixture PSD bytes")
+        self.native.project_rows = []
+        self.native.fail_continue_import_unknown = True
+        with self.assertRaises(CharacterUnknown):
+            self.client.import_media("Pip.psd", "puppet_psd", lease["lease_id"])
+        pending = self.client.inspect()["pending_operation"]
+        self.native.state.update(focused_window=None, windows=[])
+        with self.assertRaisesRegex(CharacterRejected, "No new puppet row"):
+            self.client.operation_control("reconcile_import", pending["operation_id"], lease["lease_id"])
+        self.assertEqual(self.client.inspect()["pending_operation"]["operation_id"], pending["operation_id"])
+        self.native.project_rows = [{"name": "Pip", "type": "puppet"}]
+
+        result = self.client.operation_control("reconcile_import", pending["operation_id"], lease["lease_id"])
+
+        self.assertEqual(result["status"], "native_import_observed")
+        self.assertEqual(result["completion"], "observed")
+        self.assertEqual(result["project_item"], {"name": "Pip", "type": "puppet"})
+        self.assertIsNone(self.client.inspect()["pending_operation"])
+        archived = self.client.read("operations/" + pending["operation_id"] + ".json")
+        self.assertEqual(archived["resolution"], "observed_project_row")
 
     def test_import_retains_unknown_when_native_chooser_never_submits(self):
         lease = self.claim()
